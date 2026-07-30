@@ -45,6 +45,9 @@ button { cursor: pointer; border: none; outline: none; }
 .scan-line { position: absolute; left: 10%; right: 10%; height: 2px; background: linear-gradient(90deg, transparent, #4F46E5, transparent); top: 40%; display: none; animation: scanMove 2s ease-in-out infinite; }
 .scan-area.active .scan-line { display: block; }
 @keyframes scanMove { 0%, 100% { top: 20%; } 50% { top: 70%; } }
+@keyframes shutterFlash { 0% { opacity: 0.6; } 100% { opacity: 0; } }
+.scan-flash { position: absolute; inset: 0; background: #fff; pointer-events: none; opacity: 0; }
+.scan-flash.active { animation: shutterFlash 0.25s ease-out; }
 .scan-corner { position: absolute; width: 24px; height: 24px; border-color: #4F46E5; }
 .scan-corner.tl { top: 12px; left: 12px; border-top: 3px solid; border-left: 3px solid; border-radius: 4px 0 0 0; }
 .scan-corner.tr { top: 12px; right: 12px; border-top: 3px solid; border-right: 3px solid; border-radius: 0 4px 0 0; }
@@ -158,8 +161,11 @@ button { cursor: pointer; border: none; outline: none; }
           <div class="icon">📷</div>
           <p>👆 点击取景框打开相机扫码</p>
         </div>
-        <div id="readerElement" style="width:100%;height:260px;display:none;"></div>
+        <video id="barcodeVideo" autoplay playsinline muted style="width:100%;height:260px;object-fit:cover;display:none;"></video>
+        <canvas id="captureCanvas" style="display:none;"></canvas>
+        <div id="scanFileReader" style="display:none;"></div>
         <div class="scan-line"></div>
+        <div class="scan-flash" id="scanFlash"></div>
         <div class="scan-corner tl"></div>
         <div class="scan-corner tr"></div>
         <div class="scan-corner bl"></div>
@@ -311,7 +317,7 @@ button { cursor: pointer; border: none; outline: none; }
 <div class="toast" id="toast"></div>
 
 <!-- html5-qrcode library -->
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/dist/html5-qrcode.min.js"></script>
 <script>
 // ===== State =====
 let appState = {
@@ -422,79 +428,151 @@ function createNewSheet(name) {
   return sheet;
 }
 
-// ===== Camera =====
+// ===== Camera — Still-capture scanner =====
+let scanStream = null;
+let captureTimer = null;
+let nativeDetector = null;
+let html5QrFileReader = null;
+
+// Get supported barcode formats on load
+if ('BarcodeDetector' in window) {
+  (async () => {
+    let supported = [];
+    try { supported = await BarcodeDetector.getSupportedFormats(); } catch(e) {}
+    const want = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf'];
+    const use = supported.length ? want.filter(f => supported.includes(f)) : ['ean_13','ean_8','upc_a','code_128'];
+    if (use.length === 0) use.push('ean_13','ean_8','upc_a');
+    try { nativeDetector = new BarcodeDetector({ formats: use }); } catch(e) {}
+    console.log('Native BarcodeDetector ready, formats:', use);
+  })();
+}
+
 async function toggleCamera() {
   const area = document.getElementById('scanArea');
-  const readerEl = document.getElementById('readerElement');
-  
+  const video = document.getElementById('barcodeVideo');
+
   if (appState.isScanning) {
     await stopScanner();
     area.classList.remove('active');
-    readerEl.style.display = 'none';
+    video.style.display = 'none';
     return;
   }
-  
-  // Start scanner
+
   area.classList.add('active');
-  readerEl.style.display = 'block';
-  
+  video.style.display = 'block';
+  appState.isScanning = true;
+
+  // Open camera (viewfinder)
   try {
-    // Check if we already have an scanner instance
-    if (!appState.scanner) {
-      appState.scanner = new Html5Qrcode("readerElement");
-    }
-    
-    const config = {
-      fps: 15,
-      qrbox: { width: 250, height: 120 },
-      aspectRatio: 1.0,
-    };
-    
-    await appState.scanner.start(
-      { facingMode: "environment" },
-      config,
-      onBarcodeDetected,
-      (error) => { /* Ignore scan failures - just continue */ }
-    );
-    
-    appState.isScanning = true;
-  } catch (err) {
-    console.error('Camera start error:', err);
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+    video.srcObject = stream;
+    await video.play();
+    scanStream = stream;
+  } catch(err) {
+    appState.isScanning = false;
     area.classList.remove('active');
-    readerEl.style.display = 'none';
-    
+    video.style.display = 'none';
     if (err.toString().includes('NotAllowedError') || err.toString().includes('Permission')) {
       showToast('⚠️ 请在设置中允许相机权限');
     } else {
-      showToast('⚠️ 相机启动失败，请手动输入条码');
+      showToast('⚠️ 无法打开相机，请手动输入条码');
       document.getElementById('manualEntry').classList.add('show');
     }
+    return;
   }
+
+  showToast('📷 对准条码，自动拍照识别...');
+
+  // Auto-capture every 2 seconds
+  if (captureTimer) clearInterval(captureTimer);
+  captureTimer = setInterval(async () => {
+    if (!appState.isScanning) return;
+    const result = await captureAndScan(video);
+    if (result) {
+      onBarcodeDetected(result.code, { format: result.format });
+    }
+  }, 2000);
+}
+
+async function captureAndScan(video) {
+  const canvas = document.getElementById('captureCanvas');
+  const w = video.videoWidth || 1280;
+  const h = video.videoHeight || 720;
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, w, h);
+
+  // Flash effect
+  showShutterFlash();
+
+  // Try native BarcodeDetector on still frame (much more reliable than live video)
+  if (nativeDetector) {
+    try {
+      const barcodes = await nativeDetector.detect(canvas);
+      for (const b of barcodes) {
+        const code = b.rawValue.trim();
+        if (/^\d{8,13}$/.test(code)) {
+          console.log('Native still-scan:', code, b.format);
+          return { code, format: b.format };
+        }
+      }
+    } catch(e) { /* skip */ }
+  }
+
+  // Fallback: html5-qrcode scanFile on the captured image
+  try {
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+    if (!html5QrFileReader) {
+      html5QrFileReader = new Html5Qrcode("scanFileReader");
+    }
+    const result = await html5QrFileReader.scanFileV2(blob, false);
+    const code = result?.decodedText?.trim();
+    if (code && /^\d{8,13}$/.test(code)) {
+      console.log('html5-qrcode still-scan:', code);
+      return { code, format: 'EAN_13' };
+    }
+  } catch(e) {
+    // scanFileV2 throws when no barcode found — normal
+  }
+
+  return null;
+}
+
+function showShutterFlash() {
+  const el = document.getElementById('scanFlash');
+  if (!el) return;
+  el.classList.remove('active');
+  // Force reflow to restart animation
+  void el.offsetWidth;
+  el.classList.add('active');
+  setTimeout(() => el.classList.remove('active'), 300);
 }
 
 async function stopScanner() {
-  if (appState.scanner && appState.isScanning) {
-    try {
-      await appState.scanner.stop();
-    } catch(e) { /* ignore */ }
-    appState.isScanning = false;
+  // Clear auto-capture timer
+  if (captureTimer) {
+    clearInterval(captureTimer);
+    captureTimer = null;
   }
+  // Stop camera stream
+  if (scanStream) {
+    scanStream.getTracks().forEach(t => t.stop());
+    scanStream = null;
+  }
+  // Stop html5-qrcode file reader (no-op, just cleanup)
+  appState.isScanning = false;
 }
 
 function onBarcodeDetected(decodedText, decodedResult) {
-  // Stop scanner immediately
   stopScanner();
-  
   const area = document.getElementById('scanArea');
   area.classList.remove('active');
-  document.getElementById('readerElement').style.display = 'none';
-  
-  // Process barcode
+  document.getElementById('barcodeVideo').style.display = 'none';
   processBarcode(decodedText);
-  
-  // Vibrate on iOS
   if (navigator.vibrate) navigator.vibrate(100);
-  
   showToast('✅ 条码识别成功');
 }
 
@@ -976,7 +1054,7 @@ function switchTab(tabName) {
   if (tabName !== 'scan' && appState.isScanning) {
     stopScanner();
     document.getElementById('scanArea').classList.remove('active');
-    document.getElementById('readerElement').style.display = 'none';
+    document.getElementById('barcodeVideo').style.display = 'none';
   }
   
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
