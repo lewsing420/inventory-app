@@ -106,6 +106,11 @@ button { cursor: pointer; border: none; outline: none; }
 .toast.show { display: block; animation: toastIn .2s ease-out; }
 @keyframes toastIn { from { opacity: 0; transform: translate(-50%, -40%); } to { opacity: 1; transform: translate(-50%, -50%); } }
 
+/* ===== Debug Panel (toggle via long-press on header) ===== */
+.debug-toggle { position: fixed; bottom: 80px; right: 8px; z-index: 150; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,0.5); color: #fff; font-size: 16px; border: none; display: flex; align-items: center; justify-content: center; }
+.debug-panel { display: none; position: fixed; bottom: 120px; right: 8px; left: 8px; max-height: 40vh; background: rgba(0,0,0,0.85); color: #0f0; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.5; border-radius: 10px; padding: 10px; z-index: 250; overflow-y: auto; backdrop-filter: blur(8px); white-space: pre-wrap; word-break: break-all; }
+.debug-panel.show { display: block; }
+
 /* ===== Sheet List ===== */
 .sheet-item { padding: 14px 16px; background: #fff; border-radius: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); cursor: pointer; transition: .15s; }
 .sheet-item:active { transform: scale(0.98); }
@@ -202,6 +207,11 @@ button { cursor: pointer; border: none; outline: none; }
           🔢 手动输入条码
         </button>
       </div>
+
+      <!-- Manual Capture Button (tap to scan right now) -->
+      <button class="btn btn-primary btn-block" onclick="captureNow()" style="margin-bottom:12px;display:none;" id="captureNowBtn">
+        📸 立即拍照识别
+      </button>
 
       <!-- Current Sheet Items -->
       <div class="card">
@@ -316,6 +326,10 @@ button { cursor: pointer; border: none; outline: none; }
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Debug Panel -->
+<div class="debug-panel" id="debugPanel"><div id="debugPanelBody">等待调试信息...</div></div>
+<button class="debug-toggle" id="debugToggle" onclick="toggleDebugPanel()">🐛</button>
+
 <!-- html5-qrcode library -->
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/dist/html5-qrcode.min.js"></script>
 <script>
@@ -351,6 +365,34 @@ function initCameraPermission() {
     }
   }).catch(err => {
     console.log('Camera access not yet granted:', err);
+  });
+}
+
+// ===== Debug Panel =====
+function toggleDebugPanel() {
+  const panel = document.getElementById('debugPanel');
+  const isShow = panel.classList.toggle('show');
+  if (isShow) {
+    document.getElementById('debugPanelBody').innerHTML = debugLog.slice(-30).join('<br>') || '等待调试信息...';
+  }
+}
+
+// ===== Manual Capture (tap to scan now) =====
+function captureNow() {
+  const video = document.getElementById('barcodeVideo');
+  if (!appState.isScanning || !video || !video.srcObject) {
+    showToast('📷 请先打开相机');
+    return;
+  }
+  dbg('👉 Manual capture triggered');
+  window._captureCount = (window._captureCount || 0) + 1;
+  captureAndScan(video).then(result => {
+    if (result) {
+      dbg('✅ Manual capture success: ' + result.code);
+      onBarcodeDetected(result.code, { format: result.format });
+    } else {
+      showToast('📷 未识别到条码，请调整角度');
+    }
   });
 }
 
@@ -433,18 +475,34 @@ let scanStream = null;
 let captureTimer = null;
 let nativeDetector = null;
 let html5QrFileReader = null;
+const debugLog = [];
+
+function dbg(msg) {
+  const ts = new Date().toLocaleTimeString();
+  debugLog.push(`[${ts}] ${msg}`);
+  if (debugLog.length > 200) debugLog.shift();
+  console.log(msg);
+  // Update debug panel if visible
+  const el = document.getElementById('debugPanelBody');
+  if (el && document.getElementById('debugPanel').classList.contains('show')) {
+    el.innerHTML = debugLog.slice(-30).join('<br>');
+    el.scrollTop = el.scrollHeight;
+  }
+}
 
 // Get supported barcode formats on load
 if ('BarcodeDetector' in window) {
   (async () => {
     let supported = [];
-    try { supported = await BarcodeDetector.getSupportedFormats(); } catch(e) {}
+    try { supported = await BarcodeDetector.getSupportedFormats(); } catch(e) { dbg('getSupportedFormats error: ' + e.message); }
     const want = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf'];
     const use = supported.length ? want.filter(f => supported.includes(f)) : ['ean_13','ean_8','upc_a','code_128'];
     if (use.length === 0) use.push('ean_13','ean_8','upc_a');
-    try { nativeDetector = new BarcodeDetector({ formats: use }); } catch(e) {}
-    console.log('Native BarcodeDetector ready, formats:', use);
+    try { nativeDetector = new BarcodeDetector({ formats: use }); } catch(e) { dbg('BarcodeDetector init error: ' + e.message); }
+    dbg('✅ BarcodeDetector ready, formats: ' + use.join(', '));
   })();
+} else {
+  dbg('❌ BarcodeDetector NOT available in this browser');
 }
 
 async function toggleCamera() {
@@ -461,6 +519,7 @@ async function toggleCamera() {
   area.classList.add('active');
   video.style.display = 'block';
   appState.isScanning = true;
+  document.getElementById('captureNowBtn').style.display = 'block';
 
   // Open camera (viewfinder)
   try {
@@ -521,7 +580,7 @@ async function toggleCamera() {
 async function captureAndScan(video) {
   // Ensure video has actual dimensions (iOS bug: videoWidth may be 0)
   if (!video.videoWidth || !video.videoHeight) {
-    console.log('Waiting for video dimensions...');
+    dbg('Waiting for video dimensions...');
     for (let i = 0; i < 20; i++) {
       await new Promise(r => requestAnimationFrame(r));
       if (video.videoWidth && video.videoHeight) break;
@@ -529,8 +588,29 @@ async function captureAndScan(video) {
   }
   const w = video.videoWidth || 1280;
   const h = video.videoHeight || 720;
-  console.log('Capture:', w, 'x', h, '| attempt:', window._captureCount);
-  
+  dbg('Capture: ' + w + 'x' + h + ' | attempt: ' + window._captureCount);
+
+  // === STRATEGY A: Try BarcodeDetector.detect(video) directly ===
+  // iOS supports detect() on video elements better than on canvas
+  if (nativeDetector && video.readyState >= 2) {
+    try {
+      const barcodes = await nativeDetector.detect(video);
+      dbg('detect(video) returned: ' + (barcodes ? barcodes.length : 'null') + ' barcodes');
+      for (const b of barcodes) {
+        const code = b.rawValue.trim();
+        if (code) {
+          dbg('✅ detect(video) success: ' + code + ' (' + b.format + ')');
+          return { code, format: b.format };
+        }
+      }
+    } catch(e) {
+      dbg('detect(video) error: ' + e.message);
+    }
+  } else {
+    dbg('detect(video) skipped - nativeDetector: ' + (!!nativeDetector) + ', readyState: ' + video.readyState);
+  }
+
+  // === STRATEGY B: Canvas capture + detect ===
   const canvas = document.getElementById('captureCanvas');
   canvas.width = w;
   canvas.height = h;
@@ -542,45 +622,44 @@ async function captureAndScan(video) {
   // Flash effect + feedback
   showShutterFlash();
 
-  // Try native BarcodeDetector on still frame
+  // Try native BarcodeDetector on still frame (canvas)
   if (nativeDetector) {
     try {
       const barcodes = await nativeDetector.detect(canvas);
-      console.log('BarcodeDetector raw results:', barcodes.length, 
-        barcodes.map(b => b.rawValue + '(' + b.format + ')'));
+      dbg('detect(canvas) returned: ' + (barcodes ? barcodes.length : 'null') + ' barcodes');
       for (const b of barcodes) {
         const code = b.rawValue.trim();
         if (code) {
-          console.log('✅ Native still-scan success:', code, b.format);
+          dbg('✅ detect(canvas) success: ' + code + ' (' + b.format + ')');
           return { code, format: b.format };
         }
       }
       if (barcodes.length > 0) {
-        console.log('Barcodes found but empty value');
+        dbg('Barcodes found but empty value');
       }
     } catch(e) { 
-      console.warn('Native detect error:', e);
+      dbg('detect(canvas) error: ' + e.message);
     }
-  } else {
-    console.log('nativeDetector not initialized');
   }
 
-  // Fallback: html5-qrcode scanFile (use PNG for lossless barcode scanning)
+  // === STRATEGY C: html5-qrcode fallback ===
   try {
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     if (!html5QrFileReader) {
       html5QrFileReader = new Html5Qrcode("scanFileReader");
+      dbg('Html5Qrcode reader initialized');
     }
     const result = await html5QrFileReader.scanFileV2(blob, false);
     const code = result?.decodedText?.trim();
     if (code) {
-      console.log('✅ html5-qrcode still-scan success:', code);
+      dbg('✅ html5-qrcode success: ' + code);
       return { code, format: 'EAN_13' };
     }
   } catch(e) {
-    console.log('html5-qrcode scanFile result:', e.message?.substring(0, 60) || 'no match');
+    dbg('html5-qrcode: ' + (e.message?.substring(0, 60) || 'no match'));
   }
 
+  dbg('❌ All strategies failed for this frame');
   return null;
 }
 
@@ -607,6 +686,7 @@ async function stopScanner() {
   }
   // Stop html5-qrcode file reader (no-op, just cleanup)
   appState.isScanning = false;
+  document.getElementById('captureNowBtn').style.display = 'none';
 }
 
 function onBarcodeDetected(decodedText, decodedResult) {
