@@ -158,6 +158,7 @@ button { cursor: pointer; border: none; outline: none; }
           <div class="icon">📷</div>
           <p>👆 点击取景框打开相机扫码</p>
         </div>
+        <video id="barcodeVideo" autoplay playsinline muted style="width:100%;height:260px;object-fit:cover;display:none;"></video>
         <div id="readerElement" style="width:100%;height:260px;display:none;"></div>
         <div class="scan-line"></div>
         <div class="scan-corner tl"></div>
@@ -423,46 +424,63 @@ function createNewSheet(name) {
 }
 
 // ===== Camera =====
+let scanStream = null;       // MediaStream for native scanner
+let scanLoopId = null;       // requestAnimationFrame id
+let scanFrameCount = 0;      // throttle frames
+
 async function toggleCamera() {
   const area = document.getElementById('scanArea');
+  const video = document.getElementById('barcodeVideo');
   const readerEl = document.getElementById('readerElement');
   
   if (appState.isScanning) {
     await stopScanner();
     area.classList.remove('active');
+    video.style.display = 'none';
     readerEl.style.display = 'none';
     return;
   }
   
-  // Start scanner
   area.classList.add('active');
-  readerEl.style.display = 'block';
   
+  // Try native BarcodeDetector first (iOS 16+, Chrome)
+  if ('BarcodeDetector' in window) {
+    video.style.display = 'block';
+    readerEl.style.display = 'none';
+    try {
+      const supportsNative = await tryNativeBarcodeScan(video);
+      if (supportsNative) {
+        appState.isScanning = true;
+        return;
+      }
+    } catch(e) {
+      console.warn('Native scanner failed, falling back:', e);
+    }
+    // Fall through to html5-qrcode
+    video.style.display = 'none';
+  }
+  
+  // Fallback: html5-qrcode
+  readerEl.style.display = 'block';
   try {
-    // Check if we already have an scanner instance
     if (!appState.scanner) {
       appState.scanner = new Html5Qrcode("readerElement");
     }
-    
-    const config = {
-      fps: 15,
-      qrbox: { width: 250, height: 120 },
-      aspectRatio: 1.0,
-    };
-    
     await appState.scanner.start(
       { facingMode: "environment" },
-      config,
+      {
+        fps: 20,
+        qrbox: { width: 320, height: 80 },
+        aspectRatio: 1.77778, // 16:9
+      },
       onBarcodeDetected,
-      (error) => { /* Ignore scan failures - just continue */ }
+      () => {} // ignore scan misses
     );
-    
     appState.isScanning = true;
   } catch (err) {
     console.error('Camera start error:', err);
     area.classList.remove('active');
     readerEl.style.display = 'none';
-    
     if (err.toString().includes('NotAllowedError') || err.toString().includes('Permission')) {
       showToast('⚠️ 请在设置中允许相机权限');
     } else {
@@ -473,12 +491,66 @@ async function toggleCamera() {
 }
 
 async function stopScanner() {
-  if (appState.scanner && appState.isScanning) {
-    try {
-      await appState.scanner.stop();
-    } catch(e) { /* ignore */ }
-    appState.isScanning = false;
+  // Stop native scanner
+  if (scanLoopId) {
+    cancelAnimationFrame(scanLoopId);
+    scanLoopId = null;
   }
+  if (scanStream) {
+    scanStream.getTracks().forEach(t => t.stop());
+    scanStream = null;
+  }
+  // Stop html5-qrcode
+  if (appState.scanner && appState.isScanning) {
+    try { await appState.scanner.stop(); } catch(e) { /* ignore */ }
+  }
+  appState.isScanning = false;
+  scanFrameCount = 0;
+}
+
+// Native BarcodeDetector loop (iOS 16+)
+async function tryNativeBarcodeScan(video) {
+  if (!('BarcodeDetector' in window)) return false;
+  
+  // Start camera
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+  });
+  video.srcObject = stream;
+  await video.play();
+  scanStream = stream;
+  
+  const detector = new BarcodeDetector({
+    formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf','qr_code']
+  });
+  
+  let nativeResult = null;
+  
+  async function detectOnce() {
+    if (!appState.isScanning && !nativeResult) return;
+    
+    scanFrameCount++;
+    // Sample every 2nd frame on iPhone to save battery
+    if (scanFrameCount % 2 !== 0) { scanLoopId = requestAnimationFrame(detectOnce); return; }
+    
+    try {
+      const barcodes = await detector.detect(video);
+      for (const b of barcodes) {
+        const code = b.rawValue.trim();
+        // Accept 8-13 digit barcodes (EAN/UPC) or any non-empty QR
+        if (/^\d{8,13}$/.test(code)) {
+          nativeResult = code;
+          onBarcodeDetected(code, { format: b.format });
+          return;
+        }
+      }
+    } catch(e) { /* detection frame error, continue */ }
+    
+    if (!nativeResult) scanLoopId = requestAnimationFrame(detectOnce);
+  }
+  
+  scanLoopId = requestAnimationFrame(detectOnce);
+  return true; // native scanner started
 }
 
 function onBarcodeDetected(decodedText, decodedResult) {
@@ -487,6 +559,7 @@ function onBarcodeDetected(decodedText, decodedResult) {
   
   const area = document.getElementById('scanArea');
   area.classList.remove('active');
+  document.getElementById('barcodeVideo').style.display = 'none';
   document.getElementById('readerElement').style.display = 'none';
   
   // Process barcode
