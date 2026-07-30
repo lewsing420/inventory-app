@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>库存盘点 App - 扫码优先</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #f2f2f7;
+    color: #1c1c1e;
+  }
+  .phone-frame {
+    width: 390px;
+    height: 844px;
+    background: #f2f2f7;
+    border-radius: 48px;
+    overflow: hidden;
+    position: relative;
+    margin: 20px auto;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.08), 0 20px 60px rgba(0,0,0,.15);
+  }
+  .status-bar {
+    height: 54px;
+    background: #f2f2f7;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    padding: 0 28px 8px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .status-bar .time { font-weight: 700; }
+  .status-bar .icons { display: flex; gap: 6px; }
+  .header {
+    padding: 8px 20px 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .header h1 {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  .header .badge {
+    background: #007aff;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+  }
+  .session-info {
+    display: flex;
+    gap: 16px;
+    padding: 4px 20px 12px;
+    font-size: 14px;
+    color: #8e8e93;
+  }
+  .session-info span { display: flex; align-items: center; gap: 4px; }
+  /* Scan zone */
+  .scan-area {
+    margin: 8px 20px 12px;
+    height: 200px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .scan-area::before {
+    content: '';
+    position: absolute;
+    top: 30px; left: 30px; right: 30px; bottom: 30px;
+    border: 2px solid rgba(255,255,255,.3);
+    border-radius: 12px;
+  }
+  .scan-area .scan-icon {
+    width: 48px;
+    height: 48px;
+    background: rgba(255,255,255,.15);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    margin-bottom: 10px;
+  }
+  .scan-area .scan-label {
+    color: rgba(255,255,255,.8);
+    font-size: 15px;
+  }
+  .scan-area .scan-hint {
+    color: rgba(255,255,255,.4);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+  /* Quick entry */
+  .quick-entry {
+    margin: 4px 20px 12px;
+    background: #fff;
+    border-radius: 16px;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  }
+  .quick-entry .product-icon {
+    width: 44px;
+    height: 44px;
+    background: #e8f0fe;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .quick-entry .product-info { flex: 1; min-width: 0; }
+  .quick-entry .product-info .name {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .quick-entry .product-info .spec {
+    font-size: 12px;
+    color: #8e8e93;
+    margin-top: 1px;
+  }
+  .quick-entry .qty-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .quick-entry .qty-control button {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: none;
+    background: #f2f2f7;
+    font-size: 18px;
+    font-weight: 500;
+    color: #007aff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .quick-entry .qty-control .qty {
+    font-size: 18px;
+    font-weight: 600;
+    min-width: 28px;
+    text-align: center;
+  }
+  /* Section header */
+  .section-header {
+    padding: 12px 20px 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .section-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .section-header .count {
+    font-size: 14px;
+    color: #8e8e93;
+  }
+  /* List */
+  .record-list {
+    margin: 0 20px;
+    background: #fff;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  }
+  .record-item {
+    display: flex;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid #f2f2f7;
+  }
+  .record-item:last-child { border-bottom: none; }
+  .record-item .thumb {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: #e8f0fe;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    margin-right: 12px;
+    flex-shrink: 0;
+  }
+  .record-item .info { flex: 1; min-width: 0; }
+  .record-item .info .name {
+    font-size: 15px;
+    font-weight: 500;
+  }
+  .record-item .info .barcode {
+    font-size: 12px;
+    color: #8e8e93;
+    margin-top: 1px;
+  }
+  .record-item .qty-badge {
+    font-size: 16px;
+    font-weight: 600;
+    color: #007aff;
+  }
+  /* Action buttons */
+  .actions {
+    display: flex;
+    gap: 10px;
+    padding: 16px 20px;
+  }
+  .actions .btn {
+    flex: 1;
+    height: 48px;
+    border-radius: 14px;
+    border: none;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .actions .btn-primary {
+    background: #007aff;
+    color: #fff;
+  }
+  .actions .btn-secondary {
+    background: #e5e5ea;
+    color: #007aff;
+  }
+  /* Tab bar */
+  .tab-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0; right: 0;
+    height: 83px;
+    background: rgba(242,242,247,.94);
+    backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(0,0,0,.08);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-around;
+    padding-top: 8px;
+  }
+  .tab-item {
+    text-align: center;
+    color: #8e8e93;
+    font-size: 10px;
+    cursor: pointer;
+    flex: 1;
+  }
+  .tab-item.active { color: #007aff; }
+  .tab-item .icon { font-size: 22px; margin-bottom: 2px; }
+  /* Empty state */
+  .empty-state {
+    padding: 40px 20px;
+    text-align: center;
+    color: #8e8e93;
+  }
+  .empty-state .icon { font-size: 36px; margin-bottom: 12px; opacity: .5; }
+  .empty-state p { font-size: 14px; line-height: 1.5; }
+
+  /* Float toggle for variant label */
+  .variant-label {
+    text-align: center;
+    font-size: 14px;
+    color: #8e8e93;
+    padding: 8px;
+  }
+  .variant-label strong { color: #007aff; }
+
+  .note {
+    max-width: 390px;
+    margin: 8px auto 0;
+    padding: 12px 20px;
+    font-size: 13px;
+    color: #666;
+    background: #fff8e1;
+    border-radius: 8px;
+  }
+  .note a { color: #007aff; text-decoration: none; font-weight: 500; }
+</style>
+</head>
+<body>
+
+<div class="variant-label">🅰️ <strong>扫码优先</strong> — 打开即扫，适合快速盘点</div>
+
+<div class="phone-frame">
+  <div class="status-bar">
+    <span class="time">9:41</span>
+    <span class="icons">📶 📶 🔋</span>
+  </div>
+
+  <div class="header">
+    <h1>盘点</h1>
+    <span class="badge">进行中</span>
+  </div>
+  <div class="session-info">
+    <span>📦 盘点单 #20260730</span>
+    <span>⏱ 已扫 12 件</span>
+  </div>
+
+  <!-- Camera scan zone -->
+  <div class="scan-area">
+    <div class="scan-icon">📷</div>
+    <div class="scan-label">对准条码扫描</div>
+    <div class="scan-hint">支持 EAN-13 / Code128 / QR Code</div>
+  </div>
+
+  <!-- Quick entry (shown after scan) -->
+  <div class="quick-entry">
+    <div class="product-icon">🧋</div>
+    <div class="product-info">
+      <div class="name">武夷山大红袍（特级）</div>
+      <div class="spec">500g / 罐 · EAN: 6920123456789</div>
+    </div>
+    <div class="qty-control">
+      <button>−</button>
+      <span class="qty">5</span>
+      <button>+</button>
+    </div>
+  </div>
+
+  <div class="section-header">
+    <h2>已扫码记录</h2>
+    <span class="count">共 6 项</span>
+  </div>
+
+  <div class="record-list">
+    <div class="record-item">
+      <div class="thumb">🍵</div>
+      <div class="info">
+        <div class="name">福鼎白茶饼（2015）</div>
+        <div class="barcode">6901234567890</div>
+      </div>
+      <div class="qty-badge">×12</div>
+    </div>
+    <div class="record-item">
+      <div class="thumb">🧃</div>
+      <div class="info">
+        <div class="name">安溪铁观音（清香）</div>
+        <div class="barcode">6923456789012</div>
+      </div>
+      <div class="qty-badge">×8</div>
+    </div>
+    <div class="record-item">
+      <div class="thumb">🍯</div>
+      <div class="info">
+        <div class="name">龙井明前茶（礼盒装）</div>
+        <div class="barcode">6934567890123</div>
+      </div>
+      <div class="qty-badge">×3</div>
+    </div>
+  </div>
+
+  <!-- Bottom action bar -->
+  <div class="actions">
+    <button class="btn btn-secondary">📤 导出</button>
+    <button class="btn btn-primary">✓ 完成盘点</button>
+  </div>
+
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <div class="tab-item active">
+      <div class="icon">📷</div>
+      <div>扫码</div>
+    </div>
+    <div class="tab-item">
+      <div class="icon">📋</div>
+      <div>记录</div>
+    </div>
+    <div class="tab-item">
+      <div class="icon">📊</div>
+      <div>报表</div>
+    </div>
+    <div class="tab-item">
+      <div class="icon">⚙️</div>
+      <div>设置</div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  ⚡ 扫码后自动弹出数量面板 → 按 +/− 调整 → 自动保存<br>
+  📱 添加至主屏幕后全屏运行，无浏览器地址栏
+</div>
+
+</body>
+</html>

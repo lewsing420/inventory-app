@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>库存盘点 App - 记录优先</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #f2f2f7;
+    color: #1c1c1e;
+  }
+  .phone-frame {
+    width: 390px;
+    height: 844px;
+    background: #f2f2f7;
+    border-radius: 48px;
+    overflow: hidden;
+    position: relative;
+    margin: 20px auto;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.08), 0 20px 60px rgba(0,0,0,.15);
+  }
+  .status-bar {
+    height: 54px;
+    background: #f2f2f7;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    padding: 0 28px 8px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .status-bar .time { font-weight: 700; }
+  /* Nav bar */
+  .nav-bar {
+    padding: 8px 20px 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .nav-bar .back {
+    font-size: 28px;
+    color: #007aff;
+    font-weight: 300;
+    cursor: pointer;
+  }
+  .nav-bar h1 {
+    font-size: 17px;
+    font-weight: 600;
+    flex: 1;
+  }
+  .nav-bar .action {
+    color: #007aff;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  /* Summary cards */
+  .summary {
+    display: flex;
+    gap: 10px;
+    padding: 8px 20px;
+  }
+  .summary-card {
+    flex: 1;
+    background: #fff;
+    border-radius: 14px;
+    padding: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  }
+  .summary-card .label {
+    font-size: 12px;
+    color: #8e8e93;
+    margin-bottom: 4px;
+  }
+  .summary-card .value {
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .summary-card .value.green { color: #34c759; }
+  .summary-card .value.blue { color: #007aff; }
+  /* Section */
+  .section-header {
+    padding: 16px 20px 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .section-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .section-header a {
+    color: #007aff;
+    font-size: 14px;
+    text-decoration: none;
+    font-weight: 500;
+  }
+  /* List (grouped style) */
+  .list-group {
+    margin: 0 20px;
+    background: #fff;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  }
+  .list-item {
+    display: flex;
+    align-items: center;
+    padding: 16px;
+    border-bottom: 1px solid #f2f2f7;
+    cursor: pointer;
+  }
+  .list-item:last-child { border-bottom: none; }
+  .list-item .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 10px;
+    flex-shrink: 0;
+  }
+  .list-item .dot.green { background: #34c759; }
+  .list-item .dot.orange { background: #ff9500; }
+  .list-item .info { flex: 1; }
+  .list-item .info .name {
+    font-size: 15px;
+    font-weight: 500;
+  }
+  .list-item .info .meta {
+    font-size: 12px;
+    color: #8e8e93;
+    margin-top: 2px;
+    display: flex;
+    gap: 8px;
+  }
+  .list-item .info .meta .barcode {
+    font-family: 'SF Mono', monospace;
+    font-size: 11px;
+  }
+  .list-item .chevron {
+    color: #c7c7cc;
+    font-size: 18px;
+  }
+  .list-item .qty-badge {
+    background: #f2f2f7;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #1c1c1e;
+  }
+  /* FAB */
+  .fab {
+    position: absolute;
+    bottom: 100px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: #007aff;
+    color: #fff;
+    border: none;
+    font-size: 28px;
+    box-shadow: 0 4px 16px rgba(0,122,255,.4);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* Search bar */
+  .search-bar {
+    margin: 8px 20px;
+    padding: 10px 16px;
+    background: #e5e5ea;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #8e8e93;
+    font-size: 15px;
+  }
+  .search-bar span { opacity: .6; }
+  /* Tab bar */
+  .tab-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0; right: 0;
+    height: 83px;
+    background: rgba(242,242,247,.94);
+    backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(0,0,0,.08);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-around;
+    padding-top: 8px;
+  }
+  .tab-item {
+    text-align: center;
+    color: #8e8e93;
+    font-size: 10px;
+    cursor: pointer;
+    flex: 1;
+  }
+  .tab-item.active { color: #007aff; }
+  .tab-item .icon { font-size: 22px; margin-bottom: 2px; }
+  /* Badge */
+  .badge {
+    display: inline-block;
+    background: #ff3b30;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 8px;
+    margin-left: 4px;
+    line-height: 1.3;
+  }
+
+  .variant-label {
+    text-align: center;
+    font-size: 14px;
+    color: #8e8e93;
+    padding: 8px;
+  }
+  .variant-label strong { color: #ff9500; }
+
+  .note {
+    max-width: 390px;
+    margin: 8px auto 0;
+    padding: 12px 20px;
+    font-size: 13px;
+    color: #666;
+    background: #fff8e1;
+    border-radius: 8px;
+  }
+</style>
+</head>
+<body>
+
+<div class="variant-label">🅱️ <strong>记录优先</strong> — 清单总览，适合批量盘点</div>
+
+<div class="phone-frame">
+  <div class="status-bar">
+    <span class="time">9:41</span>
+    <span class="icons">📶 📶 🔋</span>
+  </div>
+
+  <div class="nav-bar">
+    <span class="back">‹</span>
+    <h1>盘点单 #240730</h1>
+    <span class="action">完成</span>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="summary">
+    <div class="summary-card">
+      <div class="label">已盘点</div>
+      <div class="value green">12</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">待盘点</div>
+      <div class="value" style="color:#ff9500">8</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">差异项</div>
+      <div class="value blue">3</div>
+    </div>
+  </div>
+
+  <!-- Search -->
+  <div class="search-bar">
+    <span>🔍</span>
+    <span>搜索商品名称或条码</span>
+  </div>
+
+  <div class="section-header">
+    <h2>盘点明细</h2>
+    <a href="#">按库位排序 ▾</a>
+  </div>
+
+  <div class="list-group">
+    <div class="list-item">
+      <div class="dot green"></div>
+      <div class="info">
+        <div class="name">武夷山大红袍（特级）</div>
+        <div class="meta">
+          <span class="barcode">6920123456789</span>
+          <span>500g/罐</span>
+        </div>
+      </div>
+      <div class="qty-badge">×5</div>
+      <div class="chevron">›</div>
+    </div>
+    <div class="list-item">
+      <div class="dot green"></div>
+      <div class="info">
+        <div class="name">福鼎白茶饼（2015）</div>
+        <div class="meta">
+          <span class="barcode">6901234567890</span>
+          <span>357g/饼</span>
+        </div>
+      </div>
+      <div class="qty-badge">×12</div>
+      <div class="chevron">›</div>
+    </div>
+    <div class="list-item">
+      <div class="dot orange"></div>
+      <div class="info">
+        <div class="name">安溪铁观音（清香）</div>
+        <div class="meta">
+          <span class="barcode">6923456789012</span>
+          <span>250g/袋</span>
+        </div>
+      </div>
+      <div class="qty-badge">×8</div>
+      <div class="chevron">›</div>
+    </div>
+    <div class="list-item">
+      <div class="dot green"></div>
+      <div class="info">
+        <div class="name">龙井明前茶（礼盒装）</div>
+        <div class="meta">
+          <span class="barcode">6934567890123</span>
+          <span>200g/盒</span>
+        </div>
+      </div>
+      <div class="qty-badge">×3</div>
+      <div class="chevron">›</div>
+    </div>
+  </div>
+
+  <!-- Floating action button -->
+  <button class="fab">📷</button>
+
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <div class="tab-item active">
+      <div class="icon">📋</div>
+      <div>盘点单</div>
+    </div>
+    <div class="tab-item">
+      <div class="icon">🏷️</div>
+      <div>商品库</div>
+    </div>
+    <div class="tab-item">
+      <div class="icon">📊</div>
+      <div>报表</div>
+    </div>
+    <div class="tab-item">
+      <div class="icon">⚙️</div>
+      <div>设置</div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  📋 列表显示所有商品（含待盘点项）<br>
+  🔵 橙色圆点 = 数量有差异，绿色 = 已盘<br>
+  📷 底部浮动按钮随时扫码，扫完回到列表
+</div>
+
+</body>
+</html>

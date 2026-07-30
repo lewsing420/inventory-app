@@ -1,0 +1,8 @@
+name = "inventory-barcode-api"
+main = "worker.js"
+compatibility_date = "2025-04-01"
+
+# KV 命名空间（可选，用于缓存）
+# [[kv_namespaces]]
+# binding = "BARCODE_CACHE"
+# id = "你的KV_NAMESPACE_ID"
