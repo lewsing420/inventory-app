@@ -160,6 +160,7 @@ button { cursor: pointer; border: none; outline: none; }
         </div>
         <video id="barcodeVideo" autoplay playsinline muted style="width:100%;height:260px;object-fit:cover;display:none;"></video>
         <div id="readerElement" style="width:100%;height:260px;display:none;"></div>
+        <div id="quaggaViewport" style="width:100%;height:260px;display:none;"></div>
         <div class="scan-line"></div>
         <div class="scan-corner tl"></div>
         <div class="scan-corner tr"></div>
@@ -313,6 +314,8 @@ button { cursor: pointer; border: none; outline: none; }
 
 <!-- html5-qrcode library -->
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/dist/html5-qrcode.min.js"></script>
+<!-- Quagga2: 1D barcode scanner -->
+<script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.10.0/dist/quagga.min.js"></script>
 <script>
 // ===== State =====
 let appState = {
@@ -424,43 +427,58 @@ function createNewSheet(name) {
 }
 
 // ===== Camera =====
+// Scanner engine state (swapped in/out)
 let scanStream = null;
 let scanLoopId = null;
 let scanFrameCount = 0;
+let quaggaActive = false;
 console.log('BarcodeDetector available:', 'BarcodeDetector' in window);
+console.log('Quagga2 available:', typeof Quagga !== 'undefined');
 
 async function toggleCamera() {
   const area = document.getElementById('scanArea');
   const video = document.getElementById('barcodeVideo');
   const readerEl = document.getElementById('readerElement');
-  
+  const quaggaEl = document.getElementById('quaggaViewport');
+
   if (appState.isScanning) {
     await stopScanner();
     area.classList.remove('active');
     video.style.display = 'none';
     readerEl.style.display = 'none';
+    quaggaEl.style.display = 'none';
     return;
   }
-  
+
   area.classList.add('active');
-  
-  // Try native BarcodeDetector first (iOS 16+, Chrome)
+  appState.isScanning = true;
+
+  // === 1) Native BarcodeDetector quick pass (3s) ===
   if ('BarcodeDetector' in window) {
     video.style.display = 'block';
+    quaggaEl.style.display = 'none';
     readerEl.style.display = 'none';
-    showToast('📷 原生扫码中...');
-    
-    // Try native with a short grace period (3s); if nothing found, fall through
-    const foundInTime = await startNativeScanner(video);
-    if (foundInTime) {
-      appState.isScanning = true;
-      return;
-    }
-    // Native didn't find anything or failed — fall through
+    showToast('📷 原生扫码...');
+    const found = await nativeQuickScan(video);
     video.style.display = 'none';
+    if (found) return; // already called onBarcodeDetected
+    showToast('📷 未识别到条码，切换到专业扫码引擎...');
   }
 
-  // Fallback: html5-qrcode
+  // === 2) Quagga2 — purpose-built for 1D barcodes ===
+  video.style.display = 'none';
+  readerEl.style.display = 'none';
+  quaggaEl.style.display = 'block';
+  showToast('📷 条码识别中...');
+  const quaggaOk = await startQuaggaScanner(quaggaEl);
+  if (quaggaOk) {
+    // Quagga is now running and will call onBarcodeDetected when found
+    showToast('📷 摄像头已开启，对准条码...');
+    return;
+  }
+
+  // === 3) Fallback: html5-qrcode ===
+  quaggaEl.style.display = 'none';
   readerEl.style.display = 'block';
   showToast('📷 启动扫码引擎...');
   try {
@@ -474,29 +492,41 @@ async function toggleCamera() {
     await appState.scanner.start(
       { facingMode: "environment" },
       {
-        fps: 15,
-        qrbox: { width: 320, height: 80 },
+        fps: 12,
+        qrbox: { width: 300, height: 80 },
         aspectRatio: 1.77778,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.ITF,
+        ],
       },
       onBarcodeDetected,
       () => {}
     );
-    appState.isScanning = true;
   } catch (err) {
     console.error('Camera start error:', err);
+    appState.isScanning = false;
     area.classList.remove('active');
     readerEl.style.display = 'none';
+    quaggaEl.style.display = 'none';
+    video.style.display = 'none';
     if (err.toString().includes('NotAllowedError') || err.toString().includes('Permission')) {
       showToast('⚠️ 请在设置中允许相机权限');
     } else {
-      showToast('⚠️ 相机启动失败，请手动输入条码');
+      showToast('⚠️ 扫码模块全部启动失败，请手动输入条码');
       document.getElementById('manualEntry').classList.add('show');
     }
   }
 }
 
 async function stopScanner() {
-  // Stop native scanner
+  // Stop native scanner loop
   if (scanLoopId) {
     cancelAnimationFrame(scanLoopId);
     scanLoopId = null;
@@ -504,6 +534,14 @@ async function stopScanner() {
   if (scanStream) {
     scanStream.getTracks().forEach(t => t.stop());
     scanStream = null;
+  }
+  // Stop Quagga2
+  if (quaggaActive) {
+    try {
+      Quagga.offDetected(onQuaggaDetected);
+      Quagga.stop();
+    } catch(e) { /* ignore */ }
+    quaggaActive = false;
   }
   // Stop html5-qrcode
   if (appState.scanner) {
@@ -513,18 +551,18 @@ async function stopScanner() {
   scanFrameCount = 0;
 }
 
-// Native BarcodeDetector — returns true iff a barcode was found
-async function startNativeScanner(video) {
-  if (!('BarcodeDetector' in window)) return false;
+// Native BarcodeDetector — quick scan, returns true when found
+async function nativeQuickScan(video) {
+  let supported = [];
+  try { supported = await BarcodeDetector.getSupportedFormats(); } catch(e) {}
+  const want = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf'];
+  const use = supported.length ? want.filter(f => supported.includes(f)) : ['ean_13','ean_8','upc_a','code_128'];
+  if (use.length === 0) use.push('ean_13','ean_8','upc_a');
+  console.log('Native formats:', use);
 
-  // Check supported formats
-  let supportedFormats = [];
-  try {
-    supportedFormats = await BarcodeDetector.getSupportedFormats();
-  } catch(e) { /* ignore */ }
-  console.log('Native formats:', supportedFormats);
+  let detector;
+  try { detector = new BarcodeDetector({ formats: use }); } catch(e) { return false; }
 
-  // Start camera
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -533,64 +571,107 @@ async function startNativeScanner(video) {
     video.srcObject = stream;
     await video.play();
     scanStream = stream;
-  } catch(e) {
-    console.warn('Camera access error:', e);
-    showToast('⚠️ 无法打开相机 (' + e.message?.slice(0,20) + ')');
-    return false;
-  }
+  } catch(e) { return false; }
 
-  // Build format list from what's actually supported
-  const want = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf'];
-  const use = supportedFormats.length ? want.filter(f => supportedFormats.includes(f)) : ['ean_13','ean_8','upc_a','code_128'];
-  if (use.length === 0) use.push('ean_13','ean_8','upc_a');
-  console.log('Native scanning for:', use);
+  scanFrameCount = 0;
+  let done = false;
 
-  let detector;
-  try {
-    detector = new BarcodeDetector({ formats: use });
-  } catch(e) {
-    console.warn('BarcodeDetector init error:', e);
-    return false;
-  }
-
-  // Scan up to ~50 frames (~3s) — quick attempt
-  const MAX_FRAMES = 50;
-  let found = false;
-
-  async function detectOnce() {
-    if (found || scanFrameCount >= MAX_FRAMES) return;
-
-    if (!appState.isScanning) return;
-
+  async function tick() {
+    if (done) return;
+    if (!appState.isScanning) { done = true; return; }
     scanFrameCount++;
-    if (scanFrameCount % 2 !== 0) {
-      scanLoopId = requestAnimationFrame(detectOnce);
-      return;
-    }
+    if (scanFrameCount % 2 !== 0) { scanLoopId = requestAnimationFrame(tick); return; }
 
     try {
       const barcodes = await detector.detect(video);
       for (const b of barcodes) {
         const code = b.rawValue.trim();
         if (/^\d{8,13}$/.test(code)) {
-          found = true;
+          done = true;
           onBarcodeDetected(code, { format: b.format });
           return;
         }
       }
-    } catch(e) {
-      /* frame error, skip */
-    }
+    } catch(e) { /* skip */ }
 
-    if (!found && scanFrameCount < MAX_FRAMES) {
-      scanLoopId = requestAnimationFrame(detectOnce);
+    if (!done && scanFrameCount < 50) {
+      scanLoopId = requestAnimationFrame(tick);
+    } else {
+      done = true;
     }
   }
 
   return new Promise((resolve) => {
-    scanLoopId = requestAnimationFrame(detectOnce);
-    // Give up after ~3s regardless
-    setTimeout(() => resolve(found), 3500);
+    scanLoopId = requestAnimationFrame(tick);
+    setTimeout(() => { done = true; resolve(false); }, 3500);
+  });
+}
+
+// Quagga2 — purpose-built 1D barcode engine
+function onQuaggaDetected(result) {
+  const code = result.codeResult.code;
+  const format = result.codeResult.format || 'unknown';
+  if (!code) return;
+  console.log('Quagga detected:', code, format);
+  onBarcodeDetected(code.trim(), { format });
+}
+
+function startQuaggaScanner(viewportEl) {
+  return new Promise((resolve) => {
+    if (typeof Quagga === 'undefined') {
+      console.warn('Quagga not loaded');
+      resolve(false);
+      return;
+    }
+
+    Quagga.onDetected(onQuaggaDetected);
+
+    Quagga.init(
+      {
+        inputStream: {
+          name: 'Live',
+          type: 'LiveStream',
+          target: viewportEl,
+          constraints: {
+            facingMode: 'environment',
+            width: { min: 640, ideal: 1280 },
+            height: { min: 480 },
+          },
+          singleChannel: true, // grayscale — faster
+        },
+        locator: {
+          halfSample: false,
+          patchSize: 'x-large', // better for far barcodes
+        },
+        decoder: {
+          readers: [
+            'ean_reader',
+            'ean_8_reader',
+            'upc_reader',
+            'upc_e_reader',
+            'code_128_reader',
+            'code_39_reader',
+            'code_93_reader',
+            'codabar_reader',
+            'i2of5_reader',
+          ],
+        },
+        locate: true,
+        numOfWorkers: 1,
+        frequency: 8, // fps
+      },
+      function(err) {
+        if (err) {
+          console.error('Quagga init error:', err);
+          showToast('⚠️ 专业扫码引擎启动失败');
+          resolve(false);
+          return;
+        }
+        quaggaActive = true;
+        Quagga.start();
+        resolve(true);
+      }
+    );
   });
 }
 
@@ -602,6 +683,7 @@ function onBarcodeDetected(decodedText, decodedResult) {
   area.classList.remove('active');
   document.getElementById('barcodeVideo').style.display = 'none';
   document.getElementById('readerElement').style.display = 'none';
+  document.getElementById('quaggaViewport').style.display = 'none';
   
   // Process barcode
   processBarcode(decodedText);
