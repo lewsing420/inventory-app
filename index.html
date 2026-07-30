@@ -1,0 +1,1161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="库存盘点">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%234F46E5'/%3E%3Ctext x='50' y='70' text-anchor='middle' font-size='50' fill='white'%3E📦%3C/text%3E%3C/svg%3E">
+<title>库存盘点</title>
+<style>
+/* ===== Reset & Base ===== */
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif; background: #f5f6fa; color: #1a1a2e; font-size: 16px; overscroll-behavior: none; }
+input, button, textarea, select { font-family: inherit; font-size: inherit; }
+button { cursor: pointer; border: none; outline: none; }
+
+/* ===== App Shell ===== */
+.app { max-width: 480px; margin: 0 auto; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; background: #f5f6fa; position: relative; }
+.header { background: linear-gradient(135deg, #4F46E5, #7C3AED); color: #fff; padding: 16px 20px; padding-top: max(16px, env(safe-area-inset-top)); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header .sheet-name { font-size: 12px; opacity: 0.85; }
+.header-actions { display: flex; gap: 12px; }
+.header-actions button { background: rgba(255,255,255,0.2); color: #fff; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 500; backdrop-filter: blur(4px); }
+
+/* ===== Main Content ===== */
+.main { flex: 1; overflow-y: auto; padding: 16px; padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+.page { display: none; }
+.page.active { display: block; }
+
+/* ===== Bottom Tab ===== */
+.tab-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 1px solid #e5e7eb; display: flex; padding: 6px 0; padding-bottom: calc(6px + env(safe-area-inset-bottom)); max-width: 480px; margin: 0 auto; z-index: 100; }
+.tab-item { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; color: #9ca3af; padding: 4px 0; transition: .2s; }
+.tab-item.active { color: #4F46E5; }
+.tab-item .tab-icon { font-size: 22px; line-height: 1.2; }
+
+/* ===== Scan Page ===== */
+.scan-area { position: relative; background: #000; border-radius: 16px; overflow: hidden; min-height: 260px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px; }
+.scan-area video { width: 100%; height: 100%; object-fit: cover; display: none; }
+.scan-area.active video { display: block; }
+.scan-placeholder { text-align: center; color: #9ca3af; padding: 40px; }
+.scan-placeholder .icon { font-size: 64px; margin-bottom: 12px; opacity: 0.5; }
+.scan-placeholder p { font-size: 14px; }
+.scan-area.active .scan-placeholder { display: none; }
+.scan-line { position: absolute; left: 10%; right: 10%; height: 2px; background: linear-gradient(90deg, transparent, #4F46E5, transparent); top: 40%; display: none; animation: scanMove 2s ease-in-out infinite; }
+.scan-area.active .scan-line { display: block; }
+@keyframes scanMove { 0%, 100% { top: 20%; } 50% { top: 70%; } }
+.scan-corner { position: absolute; width: 24px; height: 24px; border-color: #4F46E5; }
+.scan-corner.tl { top: 12px; left: 12px; border-top: 3px solid; border-left: 3px solid; border-radius: 4px 0 0 0; }
+.scan-corner.tr { top: 12px; right: 12px; border-top: 3px solid; border-right: 3px solid; border-radius: 0 4px 0 0; }
+.scan-corner.bl { bottom: 12px; left: 12px; border-bottom: 3px solid; border-left: 3px solid; border-radius: 0 0 0 4px; }
+.scan-corner.br { bottom: 12px; right: 12px; border-bottom: 3px solid; border-right: 3px solid; border-radius: 0 0 4px 0; }
+
+/* Scan Result */
+.scan-result { display: none; }
+.scan-result.show { display: block; }
+
+/* ===== Cards ===== */
+.card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.card-title { font-size: 14px; font-weight: 600; color: #6b7280; margin-bottom: 8px; }
+
+/* Product Info */
+.product-info { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f3f4f6; }
+.product-info:last-child { border-bottom: none; }
+.product-icon { width: 40px; height: 40px; background: #eef2ff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+.product-details { flex: 1; min-width: 0; }
+.product-name { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.product-spec { font-size: 12px; color: #9ca3af; margin-top: 2px; }
+.product-qty { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.qty-btn { width: 32px; height: 32px; border-radius: 50%; background: #f3f4f6; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 600; color: #4F46E5; transition: .15s; }
+.qty-btn:active { background: #e5e7eb; transform: scale(0.92); }
+.qty-value { font-size: 18px; font-weight: 700; min-width: 36px; text-align: center; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.qty-value:focus { outline: 2px solid #4F46E5; background: #eef2ff; }
+
+/* ===== Form Elements ===== */
+.input-group { margin-bottom: 12px; }
+.input-group label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 4px; font-weight: 500; }
+.input-group input, .input-group select { width: 100%; padding: 10px 14px; border: 1.5px solid #e5e7eb; border-radius: 10px; font-size: 15px; background: #fff; transition: .2s; }
+.input-group input:focus { border-color: #4F46E5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1); outline: none; }
+.input-group .input-hint { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+
+/* ===== Buttons ===== */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 20px; border-radius: 10px; font-size: 15px; font-weight: 500; transition: .2s; }
+.btn:active { transform: scale(0.97); }
+.btn-primary { background: #4F46E5; color: #fff; }
+.btn-primary:active { background: #4338CA; }
+.btn-secondary { background: #f3f4f6; color: #374151; }
+.btn-danger { background: #FEE2E2; color: #DC2626; }
+.btn-sm { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
+.btn-block { width: 100%; }
+.btn-group { display: flex; gap: 8px; }
+
+/* ===== Modals ===== */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 200; align-items: flex-end; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: #fff; border-radius: 20px 20px 0 0; width: 100%; max-width: 480px; max-height: 85vh; overflow-y: auto; padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); animation: slideUp .25s ease-out; }
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.modal-handle { width: 36px; height: 4px; background: #d1d5db; border-radius: 2px; margin: 0 auto 16px; }
+.modal-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+
+/* ===== Toast ===== */
+.toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.78); color: #fff; padding: 14px 24px; border-radius: 12px; font-size: 15px; z-index: 300; display: none; backdrop-filter: blur(8px); text-align: center; max-width: 80%; }
+.toast.show { display: block; animation: toastIn .2s ease-out; }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, -40%); } to { opacity: 1; transform: translate(-50%, -50%); } }
+
+/* ===== Sheet List ===== */
+.sheet-item { padding: 14px 16px; background: #fff; border-radius: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); cursor: pointer; transition: .15s; }
+.sheet-item:active { transform: scale(0.98); }
+.sheet-item .name { font-size: 15px; font-weight: 500; }
+.sheet-item .meta { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+.sheet-item .badge { background: #eef2ff; color: #4F46E5; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 12px; }
+
+/* ===== Item List ===== */
+.item-list .item { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid #f3f4f6; gap: 10px; }
+.item-list .item:last-child { border-bottom: none; }
+.item .qty-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.item .qty-input { width: 44px; text-align: center; font-size: 16px; font-weight: 600; border: 1px solid #e5e7eb; border-radius: 8px; padding: 4px; }
+.item .item-name { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .item-del { color: #ef4444; font-size: 18px; padding: 4px; flex-shrink: 0; }
+
+/* ===== Manual Entry ===== */
+.manual-entry { display: none; }
+.manual-entry.show { display: block; }
+
+/* ===== Empty State ===== */
+.empty-state { text-align: center; padding: 40px 20px; color: #9ca3af; }
+.empty-state .icon { font-size: 56px; margin-bottom: 12px; }
+.empty-state p { font-size: 14px; line-height: 1.6; }
+
+/* ===== Sheet Detail ===== */
+.sheet-detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.sheet-detail-header h2 { font-size: 17px; font-weight: 600; }
+.item-list-compact { margin-bottom: 16px; }
+.report-actions { display: flex; gap: 8px; }
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1 id="pageTitle">扫码盘点</h1>
+      <div class="sheet-name" id="currentSheetName">当前未选择盘点单</div>
+    </div>
+    <div class="header-actions">
+      <button onclick="showNewSheetModal()">+ 新建单</button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main" id="mainContent">
+    <!-- === Page: Scan === -->
+    <div class="page active" id="pageScan">
+      <!-- Camera Scan Area -->
+      <div class="scan-area" id="scanArea" onclick="toggleCamera()">
+        <div class="scan-placeholder">
+          <div class="icon">📷</div>
+          <p>👆 点击取景框打开相机扫码</p>
+        </div>
+        <div id="readerElement" style="width:100%;height:260px;display:none;"></div>
+        <div class="scan-line"></div>
+        <div class="scan-corner tl"></div>
+        <div class="scan-corner tr"></div>
+        <div class="scan-corner bl"></div>
+        <div class="scan-corner br"></div>
+      </div>
+
+      <!-- Scan Result -->
+      <div class="scan-result" id="scanResult">
+        <div class="card">
+          <div class="card-title">📦 扫描结果</div>
+          <div id="resultContent">
+            <div class="product-info">
+              <div class="product-icon">📦</div>
+              <div class="product-details">
+                <div class="product-name" id="resultName">-</div>
+                <div class="product-spec" id="resultSpec">-</div>
+              </div>
+              <div class="product-qty">
+                <button class="qty-btn" onclick="adjustQty(-1)">−</button>
+                <span class="qty-value" id="resultQty" contenteditable="false" onclick="editQty(this)">1</span>
+                <button class="qty-btn" onclick="adjustQty(1)">+</button>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px;">
+            <button class="btn btn-primary btn-block" onclick="addToSheet()">✓ 添加到盘点单</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Manual Entry -->
+      <div class="manual-entry" id="manualEntry">
+        <button class="btn btn-secondary btn-block" onclick="showManualModal()" style="margin-bottom:12px;">
+          🔢 手动输入条码
+        </button>
+      </div>
+
+      <!-- Current Sheet Items -->
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;">
+          <span>📋 当前盘点单</span>
+          <span id="itemCount" style="font-weight:400;color:#9ca3af;">0 项</span>
+        </div>
+        <div id="sheetItems">
+          <div class="empty-state">
+            <p>暂无商品，请扫码添加</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Page: Sheets === -->
+    <div class="page" id="pageSheets">
+      <div id="sheetList"></div>
+    </div>
+
+    <!-- === Page: Report === -->
+    <div class="page" id="pageReport">
+      <div class="card">
+        <div class="card-title">选择盘点单导出</div>
+        <div class="input-group">
+          <select id="reportSheetSelect" onchange="updateReportPreview()">
+            <option value="">-- 请选择 --</option>
+          </select>
+        </div>
+      </div>
+      <div id="reportPreview" style="display:none;">
+        <div class="card">
+          <div class="card-title">📊 预览</div>
+          <div id="reportTable" style="font-size:13px;overflow-x:auto;"></div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary btn-block" onclick="exportCSV()">⬇ 导出 CSV</button>
+          <button class="btn btn-secondary btn-block" onclick="exportJSON()">📄 导出 JSON</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Page: Settings === -->
+    <div class="page" id="pageSettings">
+      <div class="card">
+        <div class="card-title">⚙️ 设置</div>
+        <div class="input-group">
+          <label>条码查询接口</label>
+          <input type="text" id="settingApiUrl" placeholder="/barcode/ 或 https://apis.tianapi.com/barcode/index">
+          <div class="input-hint">优先使用 Cloudflare Worker 代理路径（如 /barcode/），留空则自动探测</div>
+        </div>
+        <div class="input-group">
+          <label>API Key（直接调用天行数据时使用）</label>
+          <input type="password" id="settingApiKey" placeholder="仅直连时需要">
+          <div class="input-hint">使用 Worker 代理时无需填写，Key 配置在服务端</div>
+        </div>
+        <div class="input-group">
+          <label>默认库位</label>
+          <input type="text" id="settingDefaultLocation" placeholder="例如：A1">
+        </div>
+        <button class="btn btn-primary btn-block" onclick="saveSettings()">💾 保存设置</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🗃️ 数据管理</div>
+        <div class="btn-group" style="flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="showToast('本地缓存: ' + Object.keys(localStorage).length + ' 个条目')">📊 缓存状态</button>
+          <button class="btn btn-danger btn-sm" onclick="if(confirm('确定清空所有数据？此操作不可恢复！')){clearAllData();}">🗑️ 清空数据</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">ℹ️ 关于</div>
+        <div style="font-size:13px;color:#6b7280;line-height:1.8;">
+          <p>库存盘点助手 v1.0</p>
+          <p>数据存储在本地浏览器（localStorage）</p>
+          <p>条码数据来源：天行数据</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Tab -->
+  <div class="tab-bar" id="tabBar">
+    <div class="tab-item active" onclick="switchTab('scan')">
+      <span class="tab-icon">📷</span>
+      <span>扫码</span>
+    </div>
+    <div class="tab-item" onclick="switchTab('sheets')">
+      <span class="tab-icon">📋</span>
+      <span>记录</span>
+    </div>
+    <div class="tab-item" onclick="switchTab('report')">
+      <span class="tab-icon">📊</span>
+      <span>报表</span>
+    </div>
+    <div class="tab-item" onclick="switchTab('settings')">
+      <span class="tab-icon">⚙️</span>
+      <span>设置</span>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Overlay -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+  <div class="modal" id="modalContent" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- html5-qrcode library -->
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+// ===== State =====
+let appState = {
+  sheets: [],           // [{id, name, createdAt, items: [{id, barcode, name, spec, brand, quantity, location, manualEntry, scannedAt}]}]
+  currentSheetId: null, // ID of active sheet
+  currentBarcode: null, // Currently scanned barcode
+  currentProduct: null, // Currently scanned product info
+  currentQty: 1,        // Current quantity for scanned product
+  scanner: null,        // html5qrcode instance
+  isScanning: false,    // Whether camera is active
+  isProcessing: false,  // Lock flag to prevent race on scan callback
+};
+const CACHE_PREFIX = 'inventory_';
+
+// ===== Init =====
+function init() {
+  loadData();
+  loadSettings();
+  renderSheetList();
+  renderCurrentItems();
+
+  // Request camera permission on load (hidden)
+  initCameraPermission();
+}
+
+function initCameraPermission() {
+  // Just check if cameras available - triggers permission dialog on iOS
+  Html5Qrcode.getCameras().then(cameras => {
+    if (cameras && cameras.length > 0) {
+      console.log('Camera available:', cameras.length);
+    }
+  }).catch(err => {
+    console.log('Camera access not yet granted:', err);
+  });
+}
+
+// ===== Data Persistence =====
+function loadData() {
+  try {
+    const saved = localStorage.getItem(CACHE_PREFIX + 'state');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      appState.sheets = parsed.sheets || [];
+      appState.currentSheetId = parsed.currentSheetId || null;
+    }
+  } catch(e) { console.warn('Load data error:', e); }
+  
+  // Ensure at least one sheet exists
+  if (appState.sheets.length === 0) {
+    createNewSheet('盘点单 #1');
+  }
+}
+
+function saveData() {
+  try {
+    localStorage.setItem(CACHE_PREFIX + 'state', JSON.stringify({
+      sheets: appState.sheets,
+      currentSheetId: appState.currentSheetId,
+    }));
+  } catch(e) { console.warn('Save data error:', e); }
+}
+
+function getCurrentSheet() {
+  if (!appState.currentSheetId) return null;
+  return appState.sheets.find(s => s.id === appState.currentSheetId) || null;
+}
+
+// ===== Settings Persistence =====
+function loadSettings() {
+  try {
+    const saved = localStorage.getItem(CACHE_PREFIX + 'settings');
+    if (saved) {
+      const s = JSON.parse(saved);
+      if (s.apiUrl) document.getElementById('settingApiUrl').value = s.apiUrl;
+      if (s.apiKey) document.getElementById('settingApiKey').value = s.apiKey;
+      if (s.defaultLocation) document.getElementById('settingDefaultLocation').value = s.defaultLocation;
+    }
+  } catch(e) { /* ignore */ }
+}
+
+function saveSettings() {
+  try {
+    const s = {
+      apiUrl: document.getElementById('settingApiUrl').value.trim(),
+      apiKey: document.getElementById('settingApiKey').value.trim(),
+      defaultLocation: document.getElementById('settingDefaultLocation').value.trim(),
+    };
+    localStorage.setItem(CACHE_PREFIX + 'settings', JSON.stringify(s));
+    showToast('✅ 设置已保存');
+  } catch(e) { console.warn('Save settings error:', e); }
+}
+
+function getDefaultLocation() {
+  const v = document.getElementById('settingDefaultLocation').value.trim();
+  return v || 'A1';
+}
+
+function createNewSheet(name) {
+  const sheet = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: name,
+    createdAt: new Date().toISOString(),
+    items: [],
+  };
+  appState.sheets.push(sheet);
+  appState.currentSheetId = sheet.id;
+  saveData();
+  return sheet;
+}
+
+// ===== Camera =====
+async function toggleCamera() {
+  const area = document.getElementById('scanArea');
+  const readerEl = document.getElementById('readerElement');
+  
+  if (appState.isScanning) {
+    await stopScanner();
+    area.classList.remove('active');
+    readerEl.style.display = 'none';
+    return;
+  }
+  
+  // Start scanner
+  area.classList.add('active');
+  readerEl.style.display = 'block';
+  
+  try {
+    // Check if we already have an scanner instance
+    if (!appState.scanner) {
+      appState.scanner = new Html5Qrcode("readerElement");
+    }
+    
+    const config = {
+      fps: 15,
+      qrbox: { width: 250, height: 120 },
+      aspectRatio: 1.0,
+    };
+    
+    await appState.scanner.start(
+      { facingMode: "environment" },
+      config,
+      onBarcodeDetected,
+      (error) => { /* Ignore scan failures - just continue */ }
+    );
+    
+    appState.isScanning = true;
+  } catch (err) {
+    console.error('Camera start error:', err);
+    area.classList.remove('active');
+    readerEl.style.display = 'none';
+    
+    if (err.toString().includes('NotAllowedError') || err.toString().includes('Permission')) {
+      showToast('⚠️ 请在设置中允许相机权限');
+    } else {
+      showToast('⚠️ 相机启动失败，请手动输入条码');
+      document.getElementById('manualEntry').classList.add('show');
+    }
+  }
+}
+
+async function stopScanner() {
+  if (appState.scanner && appState.isScanning) {
+    try {
+      await appState.scanner.stop();
+    } catch(e) { /* ignore */ }
+    appState.isScanning = false;
+  }
+}
+
+function onBarcodeDetected(decodedText, decodedResult) {
+  // Stop scanner immediately
+  stopScanner();
+  
+  const area = document.getElementById('scanArea');
+  area.classList.remove('active');
+  document.getElementById('readerElement').style.display = 'none';
+  
+  // Process barcode
+  processBarcode(decodedText);
+  
+  // Vibrate on iOS
+  if (navigator.vibrate) navigator.vibrate(100);
+  
+  showToast('✅ 条码识别成功');
+}
+
+// ===== Barcode Processing =====
+async function processBarcode(barcode) {
+  if (appState.isProcessing) return; // Race guard
+  if (!barcode || !/^\d{8,13}$/.test(barcode)) {
+    showToast('⚠️ 无效条码格式');
+    return;
+  }
+
+  appState.isProcessing = true;
+  appState.currentBarcode = barcode;
+
+  // Check local cache first
+  const cached = localStorage.getItem(CACHE_PREFIX + 'barcode_' + barcode);
+  if (cached) {
+    try {
+      const product = JSON.parse(cached);
+      showProductResult(product);
+      appState.isProcessing = false;
+      return;
+    } catch(e) { /* ignore */ }
+  }
+
+  // Determine API endpoint
+  const apiUrl = document.getElementById('settingApiUrl').value.trim();
+  const apiKey = document.getElementById('settingApiKey').value.trim();
+
+  let product = null;
+
+  // Strategy 1: Try direct API URL (Worker proxy or tianapi)
+  if (apiUrl) {
+    try {
+      let url;
+      if (apiUrl.includes('/barcode/') || apiUrl.includes('barcode')) {
+        // Worker-style URL: /barcode/{code}
+        url = apiUrl.endsWith('/') ? `${apiUrl}${barcode}` : `${apiUrl}/${barcode}`;
+      } else {
+        // Direct tianapi-style URL: ?key=...&barcode=...
+        url = `${apiUrl}?key=${apiKey}&barcode=${barcode}`;
+      }
+      if (!apiKey && url.includes('key=')) {
+        // Skip direct tianapi if no key
+        throw new Error('no api key');
+      }
+      const resp = await fetch(url);
+      const data = await resp.json();
+
+      if (data.code === 200 && data.result) {
+        product = {
+          barcode: data.result.barcode || barcode,
+          name: data.result.name || '未知商品',
+          spec: data.result.spec || '',
+          brand: data.result.brand || '',
+          firm: data.result.firm_name || '',
+        };
+      } else if (data.result && data.result.name) {
+        // Worker returns result directly (no code wrapper)
+        product = {
+          barcode: data.result.barcode || barcode,
+          name: data.result.name || '未知商品',
+          spec: data.result.spec || '',
+          brand: data.result.brand || '',
+          firm: data.result.firm_name || '',
+        };
+      }
+    } catch(e) {
+      console.warn('Primary API error:', e);
+    }
+  }
+
+  // Strategy 2: Try worker at /barcode/{code}
+  if (!product) {
+    try {
+      const resp = await fetch(`/barcode/${barcode}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.code === 200 && data.result) {
+          product = {
+            barcode: data.result.barcode || barcode,
+            name: data.result.name || '未知商品',
+            spec: data.result.spec || '',
+            brand: data.result.brand || '',
+            firm: data.result.firm_name || '',
+          };
+        }
+      }
+    } catch(e) {
+      console.warn('Worker API error:', e);
+    }
+  }
+
+  // Cache result
+  if (product) {
+    localStorage.setItem(CACHE_PREFIX + 'barcode_' + barcode, JSON.stringify(product));
+    showProductResult(product);
+  } else {
+    showManualEntry(barcode);
+  }
+
+  appState.isProcessing = false;
+}
+
+function showProductResult(product) {
+  document.getElementById('resultName').textContent = product.name || '未知商品';
+  document.getElementById('resultSpec').textContent = [
+    product.brand,
+    product.spec
+  ].filter(Boolean).join(' · ') || '暂无规格信息';
+  document.getElementById('resultQty').textContent = '1';
+  appState.currentQty = 1;
+  appState.currentProduct = product;
+  document.getElementById('scanResult').classList.add('show');
+  document.getElementById('manualEntry').classList.remove('show');
+}
+
+function showManualEntry(barcode) {
+  appState.currentProduct = {
+    barcode: barcode,
+    name: '',
+    spec: '',
+    brand: '',
+  };
+  document.getElementById('scanResult').classList.remove('show');
+  document.getElementById('manualEntry').classList.add('show');
+  
+  // Open manual entry modal
+  showManualModal();
+}
+
+// ===== Manual Entry Modal =====
+function showManualModal() {
+  const barcode = appState.currentBarcode || '';
+  const product = appState.currentProduct || { name: '', spec: '', brand: '' };
+
+  const esc = s => String(s).replace(/[&<>"']/g, function(m) {
+    if (m === '&') return '&amp;';
+    if (m === '<') return '&lt;';
+    if (m === '>') return '&gt;';
+    if (m === '"') return '&quot;';
+    return '&#39;';
+  });
+
+  document.getElementById('modalBody').innerHTML = `
+    <div class="modal-title">🔢 手动输入商品信息</div>
+    <div class="input-group">
+      <label>条码</label>
+      <input type="text" id="manualBarcode" value="${esc(barcode)}" placeholder="输入条码数字" inputmode="numeric" pattern="[0-9]*">
+    </div>
+    <div class="input-group">
+      <label>商品名称</label>
+      <input type="text" id="manualName" value="${esc(product.name || '')}" placeholder="例如：农夫山泉 550ml">
+    </div>
+    <div class="input-group">
+      <label>品牌</label>
+      <input type="text" id="manualBrand" value="${esc(product.brand || '')}" placeholder="例如：农夫山泉">
+    </div>
+    <div class="input-group">
+      <label>规格</label>
+      <input type="text" id="manualSpec" value="${esc(product.spec || '')}" placeholder="例如：550ml">
+    </div>
+    <div class="input-group">
+      <label>数量</label>
+      <input type="number" id="manualQty" value="${appState.currentQty}" min="1" style="width:80px;">
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary btn-block" onclick="confirmManualEntry()">✓ 确认</button>
+      <button class="btn btn-secondary btn-block" onclick="closeModal()">取消</button>
+    </div>
+  `;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+
+function confirmManualEntry() {
+  const barcode = document.getElementById('manualBarcode').value.trim();
+  const name = document.getElementById('manualName').value.trim();
+  const brand = document.getElementById('manualBrand').value.trim();
+  const spec = document.getElementById('manualSpec').value.trim();
+  const qty = parseInt(document.getElementById('manualQty').value) || 1;
+
+  if (!barcode) {
+    showToast('⚠️ 请输入条码');
+    return;
+  }
+  if (!/^\d{8,13}$/.test(barcode)) {
+    showToast('⚠️ 条码格式无效（需8-13位数字）');
+    return;
+  }
+  if (!name) {
+    showToast('⚠️ 请输入商品名称');
+    return;
+  }
+  
+  const product = {
+    barcode: barcode,
+    name: name,
+    spec: spec,
+    brand: brand,
+  };
+  
+  appState.currentBarcode = barcode;
+  appState.currentProduct = product;
+  appState.currentQty = qty;
+  
+  // Cache it
+  localStorage.setItem(CACHE_PREFIX + 'barcode_' + barcode, JSON.stringify(product));
+  
+  showProductResult(product);
+  document.getElementById('resultQty').textContent = qty;
+  closeModal();
+  document.getElementById('manualEntry').classList.remove('show');
+}
+
+// ===== Quantity =====
+function adjustQty(delta) {
+  const el = document.getElementById('resultQty');
+  let qty = parseInt(el.textContent) || 1;
+  qty = Math.max(1, qty + delta);
+  el.textContent = qty;
+  appState.currentQty = qty;
+}
+
+function editQty(el) {
+  const current = el.textContent;
+  el.contentEditable = 'true';
+  el.focus();
+  
+  // Select all text
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  
+  const onBlur = () => {
+    el.contentEditable = 'false';
+    let val = parseInt(el.textContent) || 1;
+    val = Math.max(1, val);
+    el.textContent = val;
+    appState.currentQty = val;
+    el.removeEventListener('blur', onBlur);
+    el.removeEventListener('keydown', onKeydown);
+  };
+  const onKeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      el.blur();
+    }
+  };
+  el.addEventListener('blur', onBlur);
+  el.addEventListener('keydown', onKeydown);
+}
+
+// ===== Add to Sheet =====
+function addToSheet() {
+  const sheet = getCurrentSheet();
+  if (!sheet) {
+    showToast('⚠️ 请先创建盘点单');
+    return;
+  }
+  
+  const product = appState.currentProduct;
+  if (!product || !product.barcode) {
+    showToast('⚠️ 请先扫描或输入商品');
+    return;
+  }
+  
+  const qty = appState.currentQty || 1;
+  
+  // Check if barcode already exists in sheet
+  const existing = sheet.items.find(i => i.barcode === product.barcode);
+  if (existing) {
+    existing.quantity += qty;
+    showToast(`✅ ${product.name} 数量已增加 ${qty}`);
+  } else {
+    const item = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 4),
+      barcode: product.barcode,
+      name: product.name || '未知商品',
+      spec: product.spec || '',
+      brand: product.brand || '',
+      quantity: qty,
+      location: getDefaultLocation(),
+      scannedAt: new Date().toISOString(),
+    };
+    sheet.items.push(item);
+    showToast(`✅ 已添加 ${product.name} x${qty}`);
+  }
+  
+  saveData();
+  renderCurrentItems();
+  updateHeader();
+
+  // Reset scan result
+  document.getElementById('scanResult').classList.remove('show');
+  appState.currentProduct = null;
+  appState.currentBarcode = null;
+
+  // Show continue scanning hint
+  showToast('✅ 已添加，点击取景框继续扫码');
+}
+
+// ===== Sheet Management =====
+function renderSheetList() {
+  const el = document.getElementById('sheetList');
+  if (appState.sheets.length === 0) {
+    el.innerHTML = `<div class="empty-state"><div class="icon">📋</div><p>还没有盘点单<br>在扫码页新建一个</p></div>`;
+    return;
+  }
+  
+  el.innerHTML = appState.sheets.map(sheet => {
+    const itemCount = sheet.items.reduce((sum, i) => sum + i.quantity, 0);
+    const date = new Date(sheet.createdAt).toLocaleDateString('zh-CN');
+    const active = sheet.id === appState.currentSheetId ? 'style="border-left:3px solid #4F46E5;"' : '';
+    return `
+      <div class="sheet-item" ${active} onclick="selectSheet('${sheet.id}')">
+        <div>
+          <div class="name">${sheet.name}</div>
+          <div class="meta">${date} · ${sheet.items.length} 种商品 · 共 ${itemCount} 件</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="badge">${sheet.items.length}</span>
+          <span onclick="event.stopPropagation();deleteSheet('${sheet.id}')" style="color:#ef4444;font-size:16px;padding:4px;">✕</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderCurrentItems() {
+  const sheet = getCurrentSheet();
+  const el = document.getElementById('sheetItems');
+  const countEl = document.getElementById('itemCount');
+  
+  if (!sheet || sheet.items.length === 0) {
+    el.innerHTML = `<div class="empty-state"><p>暂无商品，请扫码添加</p></div>`;
+    countEl.textContent = '0 项';
+    return;
+  }
+  
+  countEl.textContent = `${sheet.items.length} 项`;
+  
+  el.innerHTML = `
+    <div class="item-list">
+      ${sheet.items.map((item, idx) => `
+        <div class="item">
+          <div class="qty-controls">
+            <button class="qty-btn" onclick="editSheetItemQty('${item.id}', -1)" style="width:26px;height:26px;font-size:14px;">−</button>
+            <span class="qty-value" style="min-width:30px;font-size:15px;" onclick="editSheetItemDirect('${item.id}', this)">${item.quantity}</span>
+            <button class="qty-btn" onclick="editSheetItemQty('${item.id}', 1)" style="width:26px;height:26px;font-size:14px;">+</button>
+          </div>
+          <div class="item-name">${item.name || item.barcode}</div>
+          <span class="item-del" onclick="removeSheetItem('${item.id}')">✕</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function editSheetItemQty(itemId, delta) {
+  const sheet = getCurrentSheet();
+  if (!sheet) return;
+  const item = sheet.items.find(i => i.id === itemId);
+  if (!item) return;
+  item.quantity = Math.max(0, item.quantity + delta);
+  if (item.quantity === 0) {
+    sheet.items = sheet.items.filter(i => i.id !== itemId);
+  }
+  saveData();
+  renderCurrentItems();
+  renderSheetList();
+}
+
+function editSheetItemDirect(itemId, el) {
+  const sheet = getCurrentSheet();
+  if (!sheet) return;
+  const item = sheet.items.find(i => i.id === itemId);
+  if (!item) return;
+  
+  const current = el.textContent;
+  el.contentEditable = 'true';
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  
+  const onBlur = () => {
+    el.contentEditable = 'false';
+    let val = parseInt(el.textContent) || 1;
+    val = Math.max(1, val);
+    el.textContent = val;
+    item.quantity = val;
+    saveData();
+    renderSheetList();
+    el.removeEventListener('blur', onBlur);
+    el.removeEventListener('keydown', onKeydown);
+  };
+  const onKeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  };
+  el.addEventListener('blur', onBlur);
+  el.addEventListener('keydown', onKeydown);
+}
+
+function removeSheetItem(itemId) {
+  const sheet = getCurrentSheet();
+  if (!sheet) return;
+  sheet.items = sheet.items.filter(i => i.id !== itemId);
+  saveData();
+  renderCurrentItems();
+  renderSheetList();
+}
+
+function selectSheet(sheetId) {
+  appState.currentSheetId = sheetId;
+  saveData();
+  renderSheetList();
+  renderCurrentItems();
+  updateHeader();
+  switchTab('scan');
+  showToast(`已切换至当前盘点单`);
+}
+
+function deleteSheet(sheetId) {
+  if (!confirm('确定删除此盘点单？')) return;
+  appState.sheets = appState.sheets.filter(s => s.id !== sheetId);
+  if (appState.currentSheetId === sheetId) {
+    appState.currentSheetId = appState.sheets.length > 0 ? appState.sheets[0].id : null;
+  }
+  if (appState.sheets.length === 0) {
+    createNewSheet('盘点单 #1');
+  }
+  saveData();
+  renderSheetList();
+  renderCurrentItems();
+  updateHeader();
+}
+
+function showNewSheetModal() {
+  const count = appState.sheets.length + 1;
+  const defName = `盘点单 #${count}`;
+  document.getElementById('modalBody').innerHTML = `
+    <div class="modal-title">新建盘点单</div>
+    <div class="input-group">
+      <label>盘点单名称</label>
+      <input type="text" id="newSheetName" value="${defName}" placeholder="例如：7月仓库盘点">
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary btn-block" onclick="confirmNewSheet()">创建</button>
+      <button class="btn btn-secondary btn-block" onclick="closeModal()">取消</button>
+    </div>
+  `;
+  document.getElementById('modalOverlay').classList.add('show');
+  setTimeout(() => document.getElementById('newSheetName').focus(), 300);
+}
+
+function confirmNewSheet() {
+  const name = document.getElementById('newSheetName').value.trim() || '盘点单';
+  createNewSheet(name);
+  saveData();
+  renderSheetList();
+  renderCurrentItems();
+  updateHeader();
+  closeModal();
+  showToast(`✅ 已创建「${name}」`);
+}
+
+function updateHeader() {
+  const sheet = getCurrentSheet();
+  document.getElementById('currentSheetName').textContent = sheet ? sheet.name : '未选择盘点单';
+}
+
+// ===== Tab Navigation =====
+function switchTab(tabName) {
+  // Stop camera if switching away from scan
+  if (tabName !== 'scan' && appState.isScanning) {
+    stopScanner();
+    document.getElementById('scanArea').classList.remove('active');
+    document.getElementById('readerElement').style.display = 'none';
+  }
+  
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+  
+  document.getElementById('page' + tabName.charAt(0).toUpperCase() + tabName.slice(1)).classList.add('active');
+  
+  // Find and activate correct tab
+  const tabNames = ['scan', 'sheets', 'report', 'settings'];
+  const idx = tabNames.indexOf(tabName);
+  document.querySelectorAll('.tab-item')[idx].classList.add('active');
+  
+  // Update header
+  const titles = { scan: '扫码盘点', sheets: '盘点记录', report: '数据报表', settings: '设置' };
+  document.getElementById('pageTitle').textContent = titles[tabName] || '库存盘点';
+  
+  // Refresh page content
+  if (tabName === 'sheets') renderSheetList();
+  if (tabName === 'report') refreshReport();
+}
+
+// ===== Report =====
+function refreshReport() {
+  const select = document.getElementById('reportSheetSelect');
+  select.innerHTML = '<option value="">-- 请选择 --</option>' + 
+    appState.sheets.map(s => `<option value="${s.id}">${s.name} (${s.items.length}项)</option>`).join('');
+  document.getElementById('reportPreview').style.display = 'none';
+}
+
+function updateReportPreview() {
+  const select = document.getElementById('reportSheetSelect');
+  const sheetId = select.value;
+  const sheet = appState.sheets.find(s => s.id === sheetId);
+  
+  if (!sheet || sheet.items.length === 0) {
+    document.getElementById('reportPreview').style.display = 'none';
+    return;
+  }
+  
+  document.getElementById('reportPreview').style.display = 'block';
+  
+  let html = '<table style="width:100%;border-collapse:collapse;">';
+  html += '<tr style="background:#f9fafb;font-weight:600;">' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">#</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">条码</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">商品名称</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">品牌</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">规格</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;text-align:right;">数量</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">库位</td>' +
+    '</tr>';
+  
+  sheet.items.forEach((item, i) => {
+    html += '<tr>' +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${i+1}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.barcode}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.name}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.brand || '-'}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.spec || '-'}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;text-align:right;">${item.quantity}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.location || '-'}</td>` +
+      '</tr>';
+  });
+  html += '</table>';
+  
+  document.getElementById('reportTable').innerHTML = html;
+}
+
+function exportCSV() {
+  const select = document.getElementById('reportSheetSelect');
+  const sheetId = select.value;
+  const sheet = appState.sheets.find(s => s.id === sheetId);
+  
+  if (!sheet || sheet.items.length === 0) {
+    showToast('⚠️ 请选择有商品的盘点单');
+    return;
+  }
+  
+  function csvEscape(val) {
+    const s = String(val || '');
+    // Double-quote and wrap in quotes if contains comma, quote, or newline
+    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }
+
+  // BOM for Excel Chinese support
+  const BOM = '\uFEFF';
+  const headers = ['条码', '商品名称', '品牌', '规格', '数量', '库位', '扫码时间'];
+  const rows = sheet.items.map(item => [
+    csvEscape(item.barcode),
+    csvEscape(item.name),
+    csvEscape(item.brand || ''),
+    csvEscape(item.spec || ''),
+    item.quantity,
+    csvEscape(item.location || ''),
+    new Date(item.scannedAt).toLocaleString('zh-CN'),
+  ]);
+  
+  const csv = BOM + headers.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
+  
+  downloadFile(csv, `${sheet.name}_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
+  showToast('✅ CSV 已导出');
+}
+
+function exportJSON() {
+  const select = document.getElementById('reportSheetSelect');
+  const sheetId = select.value;
+  const sheet = appState.sheets.find(s => s.id === sheetId);
+  if (!sheet || sheet.items.length === 0) {
+    showToast('⚠️ 请选择有商品的盘点单');
+    return;
+  }
+  downloadFile(
+    JSON.stringify(sheet, null, 2),
+    `${sheet.name}_${new Date().toISOString().slice(0,10)}.json`,
+    'application/json'
+  );
+  showToast('✅ JSON 已导出');
+}
+
+function downloadFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ===== Data Management =====
+function clearAllData() {
+  // Only clear our own keys
+  const keysToRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(CACHE_PREFIX)) {
+      keysToRemove.push(key);
+    }
+  }
+  keysToRemove.forEach(k => localStorage.removeItem(k));
+
+  appState.sheets = [];
+  appState.currentSheetId = null;
+  appState.currentProduct = null;
+  appState.currentBarcode = null;
+  createNewSheet('盘点单 #1');
+  renderSheetList();
+  renderCurrentItems();
+  updateHeader();
+  showToast('✅ 所有数据已清空');
+}
+
+// ===== Modal =====
+function showModal(html) {
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('modalOverlay') && e.target.closest('.modal')) return;
+  document.getElementById('modalOverlay').classList.remove('show');
+}
+
+// ===== Toast =====
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// ===== Start =====
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
