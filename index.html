@@ -312,7 +312,7 @@ button { cursor: pointer; border: none; outline: none; }
 <div class="toast" id="toast"></div>
 
 <!-- html5-qrcode library -->
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script>
 // ===== State =====
 let appState = {
@@ -447,23 +447,31 @@ async function toggleCamera() {
   if ('BarcodeDetector' in window) {
     video.style.display = 'block';
     readerEl.style.display = 'none';
+    showToast('📷 原生扫码启动中...');
     try {
       const supportsNative = await tryNativeBarcodeScan(video);
       if (supportsNative) {
         appState.isScanning = true;
+        console.log('✅ Native BarcodeDetector started');
         return;
       }
     } catch(e) {
-      console.warn('Native scanner failed, falling back:', e);
+      console.warn('Native scanner failed:', e);
+      showToast('⚠️ 原生扫码失败 (' + e.message?.slice(0,30) + ')，切换到备选...');
     }
     // Fall through to html5-qrcode
     video.style.display = 'none';
   }
-  
+
   // Fallback: html5-qrcode
   readerEl.style.display = 'block';
+  showToast('📷 启动扫码引擎...');
   try {
     if (!appState.scanner) {
+      if (typeof Html5Qrcode === 'undefined') {
+        showToast('⚠️ 扫码库加载失败，请检查网络');
+        throw new Error('Html5Qrcode library not loaded');
+      }
       appState.scanner = new Html5Qrcode("readerElement");
     }
     await appState.scanner.start(
@@ -511,7 +519,28 @@ async function stopScanner() {
 // Native BarcodeDetector loop (iOS 16+)
 async function tryNativeBarcodeScan(video) {
   if (!('BarcodeDetector' in window)) return false;
-  
+
+  // Check available formats
+  let supportedFormats;
+  try {
+    supportedFormats = await BarcodeDetector.getSupportedFormats();
+    console.log('Supported formats:', supportedFormats);
+  } catch(e) {
+    supportedFormats = [];
+  }
+
+  // Try native, but set a timeout - if nothing found in 8s, give up
+  const timeout = setTimeout(() => {
+    if (!nativeResult) {
+      console.log('Native scanner timeout, aborting');
+      nativeResult = '__timeout__';
+      // Clean up
+      if (scanLoopId) { cancelAnimationFrame(scanLoopId); scanLoopId = null; }
+      if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+      video.style.display = 'none';
+    }
+  }, 8000);
+
   // Start camera
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
@@ -519,36 +548,51 @@ async function tryNativeBarcodeScan(video) {
   video.srcObject = stream;
   await video.play();
   scanStream = stream;
-  
-  const detector = new BarcodeDetector({
-    formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf','qr_code']
-  });
-  
+
+  // Only request formats that are actually supported
+  const wantFormats = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf'];
+  const useFormats = wantFormats.filter(f => supportedFormats.includes(f));
+  if (useFormats.length === 0) {
+    // Fall back to all known barcode formats
+    useFormats.push('ean_13','ean_8','upc_a');
+  }
+  console.log('Using formats:', useFormats);
+
+  const detector = new BarcodeDetector({ formats: useFormats });
+
   let nativeResult = null;
-  
+
   async function detectOnce() {
-    if (!appState.isScanning && !nativeResult) return;
-    
+    if (nativeResult) return; // already found or timed out
+
+    if (!appState.isScanning) {
+      nativeResult = '__stopped__';
+      return;
+    }
+
     scanFrameCount++;
     // Sample every 2nd frame on iPhone to save battery
     if (scanFrameCount % 2 !== 0) { scanLoopId = requestAnimationFrame(detectOnce); return; }
-    
+
     try {
       const barcodes = await detector.detect(video);
       for (const b of barcodes) {
         const code = b.rawValue.trim();
         // Accept 8-13 digit barcodes (EAN/UPC) or any non-empty QR
         if (/^\d{8,13}$/.test(code)) {
+          clearTimeout(timeout);
           nativeResult = code;
           onBarcodeDetected(code, { format: b.format });
           return;
         }
       }
-    } catch(e) { /* detection frame error, continue */ }
-    
+    } catch(e) {
+      console.warn('Detection frame error:', e.message);
+    }
+
     if (!nativeResult) scanLoopId = requestAnimationFrame(detectOnce);
   }
-  
+
   scanLoopId = requestAnimationFrame(detectOnce);
   return true; // native scanner started
 }
