@@ -485,57 +485,100 @@ async function toggleCamera() {
 
   showToast('📷 对准条码，自动拍照识别...');
 
-  // Auto-capture every 2 seconds
+  // Wait for video to have actual dimensions
+  if (!video.videoWidth || !video.videoHeight) {
+    await new Promise(resolve => {
+      video.addEventListener('loadedmetadata', resolve, { once: true });
+      setTimeout(resolve, 2000); // fallback timeout
+    });
+  }
+  console.log('Video ready:', video.videoWidth, 'x', video.videoHeight);
+
+  // Auto-capture every 2 seconds (non-overlapping)
   if (captureTimer) clearInterval(captureTimer);
+  let captureAttempts = 0;
+  window._captureCount = 0;
   captureTimer = setInterval(async () => {
     if (!appState.isScanning) return;
-    const result = await captureAndScan(video);
-    if (result) {
-      onBarcodeDetected(result.code, { format: result.format });
+    if (window._isCapturing) return; // skip if previous still processing
+    window._isCapturing = true;
+    captureAttempts++;
+    window._captureCount++;
+    try {
+      const result = await captureAndScan(video);
+      if (result) {
+        console.log('BARCODE FOUND:', result.code, result.format);
+        onBarcodeDetected(result.code, { format: result.format });
+      } else if (captureAttempts >= 5) {
+        showToast('📷 未识别到条码，请调整角度或用手动输入');
+      }
+    } finally {
+      window._isCapturing = false;
     }
   }, 2000);
 }
 
 async function captureAndScan(video) {
-  const canvas = document.getElementById('captureCanvas');
+  // Ensure video has actual dimensions (iOS bug: videoWidth may be 0)
+  if (!video.videoWidth || !video.videoHeight) {
+    console.log('Waiting for video dimensions...');
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => requestAnimationFrame(r));
+      if (video.videoWidth && video.videoHeight) break;
+    }
+  }
   const w = video.videoWidth || 1280;
   const h = video.videoHeight || 720;
+  console.log('Capture:', w, 'x', h, '| attempt:', window._captureCount);
+  
+  const canvas = document.getElementById('captureCanvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
+  // Wait one more frame to ensure video frame is rendered
+  await new Promise(r => requestAnimationFrame(r));
   ctx.drawImage(video, 0, 0, w, h);
 
-  // Flash effect
+  // Flash effect + feedback
   showShutterFlash();
 
-  // Try native BarcodeDetector on still frame (much more reliable than live video)
+  // Try native BarcodeDetector on still frame
   if (nativeDetector) {
     try {
       const barcodes = await nativeDetector.detect(canvas);
+      console.log('BarcodeDetector raw results:', barcodes.length, 
+        barcodes.map(b => b.rawValue + '(' + b.format + ')'));
       for (const b of barcodes) {
         const code = b.rawValue.trim();
-        if (/^\d{8,13}$/.test(code)) {
-          console.log('Native still-scan:', code, b.format);
+        if (code) {
+          console.log('✅ Native still-scan success:', code, b.format);
           return { code, format: b.format };
         }
       }
-    } catch(e) { /* skip */ }
+      if (barcodes.length > 0) {
+        console.log('Barcodes found but empty value');
+      }
+    } catch(e) { 
+      console.warn('Native detect error:', e);
+    }
+  } else {
+    console.log('nativeDetector not initialized');
   }
 
-  // Fallback: html5-qrcode scanFile on the captured image
+  // Fallback: html5-qrcode scanFile (use PNG for lossless barcode scanning)
   try {
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     if (!html5QrFileReader) {
       html5QrFileReader = new Html5Qrcode("scanFileReader");
     }
     const result = await html5QrFileReader.scanFileV2(blob, false);
     const code = result?.decodedText?.trim();
-    if (code && /^\d{8,13}$/.test(code)) {
-      console.log('html5-qrcode still-scan:', code);
+    if (code) {
+      console.log('✅ html5-qrcode still-scan success:', code);
       return { code, format: 'EAN_13' };
     }
   } catch(e) {
-    // scanFileV2 throws when no barcode found — normal
+    console.log('html5-qrcode scanFile result:', e.message?.substring(0, 60) || 'no match');
   }
 
   return null;
@@ -579,8 +622,9 @@ function onBarcodeDetected(decodedText, decodedResult) {
 // ===== Barcode Processing =====
 async function processBarcode(barcode) {
   if (appState.isProcessing) return; // Race guard
-  if (!barcode || !/^\d{8,13}$/.test(barcode)) {
-    showToast('⚠️ 无效条码格式');
+  // Relaxed validation: accept any non-empty value
+  if (!barcode || !barcode.trim()) {
+    showToast('⚠️ 未读取到条码');
     return;
   }
 
