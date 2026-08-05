@@ -510,13 +510,15 @@ let scanStream = null;
 let frameTimer = null;
 let nativeDetector = null;
 let zxingReader = null;
+let zxingHints = null;       // 普通解码 hints
+let zxingHintsHard = null;   // TRY_HARDER hints（小/模糊条码）
 let scanRoi = null;          // Pre-allocated ROI canvas (center zoom)
 let frameSeq = 0;            // Frame sequence, used to drop stale async results
 let lastCode = null;         // Code seen in previous frames
 let lastCodeFrames = 0;      // Consecutive hit count (debounce)
 const FRAME_INTERVAL = 150;  // ms between decode attempts
 const CONFIRM_FRAMES = 2;    // Same code must hit N frames before accepting
-const DEBUG_MODE = location.search.includes('debug'); // ?debug=1 时输出逐帧诊断
+const DEBUG_MODE = true;     // 诊断模式常开：日志+截图自动上报本地服务器，/log 端点不存在时静默
 const debugLog = [];
 
 function dbg(msg) {
@@ -541,13 +543,15 @@ function initZxingReader() {
     return;
   }
   try {
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    zxingHints = new Map();
+    zxingHints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
       ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
       ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.CODE_128,
     ]);
+    zxingHintsHard = new Map(zxingHints);
+    zxingHintsHard.set(ZXing.DecodeHintType.TRY_HARDER, true);
     zxingReader = new ZXing.MultiFormatReader();
-    zxingReader.setHints(hints);
+    zxingReader.setHints(zxingHints);
     dbg('✅ ZXing reader ready (EAN_13/EAN_8/UPC_A/CODE_128)');
     setStatus('✅ ZXing 引擎就绪');
   } catch(e) {
@@ -574,27 +578,30 @@ function fallbackCopy(text, done) {
   document.body.removeChild(ta);
 }
 
-// ===== 远程调试日志上报 (?debug=1) =====
-// 把 debugLog 定时 POST 到 /log，开发者直接在服务器端查看真机每帧识别情况
+// ===== 远程调试日志上报（自动） =====
+// 页面加载即探测本地 /log；存在则持续上报 debugLog（真实部署无此端点时自动静默）
 let remoteDebugTimer = null;
 function startRemoteDebug() {
   if (remoteDebugTimer) return;
-  dbg('📡 远程日志上报已启动');
-  remoteDebugTimer = setInterval(async () => {
-    try {
-      await fetch('/log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logs: debugLog.slice(-60) }),
-      });
-    } catch (e) { /* 服务器不可达时静默 */ }
-  }, 2000);
+  dbg('📡 远程日志上报启动探测');
+  fetch('/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ logs: ['📱 页面已加载 v3', 'UA: ' + navigator.userAgent.slice(0, 100)] }) })
+    .then(() => {
+      dbg('✅ /log 探测成功，持续上报中');
+      remoteDebugTimer = setInterval(async () => {
+        try {
+          await fetch('/log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ logs: debugLog.slice(-60) }),
+          });
+        } catch (e) { /* 服务器不可达时静默 */ }
+      }, 2000);
+    })
+    .catch(() => dbg('ℹ️ 无本地服务器，不上报（正常）'));
 }
-if (location.search.includes('debug')) {
-  window.addEventListener('load', startRemoteDebug);
-}
+window.addEventListener('load', startRemoteDebug);
 
-// 调试模式：上传当前帧截图到服务器（仅 ?debug=1），用于远程查看真机画面
+// 上传当前帧截图到本地服务器（失败时静默），用于远程查看真机画面
 async function uploadFrame(label) {
   try {
     const canvas = document.getElementById('captureCanvas');
@@ -701,7 +708,8 @@ async function toggleCamera() {
   startFrameLoop(video);
 }
 
-// Grab one frame and decode it (full frame first, then center ROI zoom)
+// Grab one frame and decode it with 4-tier fallback:
+// 普通全帧 → 普通中心ROI → TRY_HARDER 全帧 → TRY_HARDER ROI
 function grabAndDecode(video) {
   // iOS quirk: videoWidth/Height may be set but readyState not ready — drawing would throw
   if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
@@ -711,8 +719,10 @@ function grabAndDecode(video) {
     canvas.width = 640;
     canvas.height = Math.max(120, Math.round(640 * video.videoHeight / video.videoWidth));
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    let code = decodeWithZxing(canvas);
-    if (!code) code = decodeRoi(canvas);
+    let code = decodeWithZxing(canvas, false);
+    if (!code) code = decodeRoi(canvas, false);
+    if (!code) code = decodeWithZxing(canvas, true);
+    if (!code) code = decodeRoi(canvas, true);
     return code;
   } catch (e) {
     dbg('❌ 帧抓取/解码异常: ' + (e.name || '') + ' ' + (e.message || e).toString().slice(0, 100));
@@ -721,7 +731,8 @@ function grabAndDecode(video) {
 }
 
 // Decode a canvas with ZXing; returns trimmed code string or null
-function decodeWithZxing(canvas) {
+// tryHarder=true 时用 TRY_HARDER 强化扫描（对小/模糊条码识别率大增，耗时约 3-5 倍）
+function decodeWithZxing(canvas, tryHarder) {
   if (!zxingReader) return null;
   try {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -735,6 +746,11 @@ function decodeWithZxing(canvas) {
     }
     const lum = new ZXing.RGBLuminanceSource(packed, canvas.width, canvas.height);
     const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
+    if (tryHarder) {
+      zxingReader.setHints(zxingHintsHard);
+    } else {
+      zxingReader.setHints(zxingHints);
+    }
     const result = zxingReader.decode(bitmap);
     return result ? result.getText().trim() : null;
   } catch(e) {
@@ -743,7 +759,7 @@ function decodeWithZxing(canvas) {
 }
 
 // Zoom into the center region and retry (barcode fills more of the frame)
-function decodeRoi(canvas) {
+function decodeRoi(canvas, tryHarder) {
   if (!scanRoi) scanRoi = document.createElement('canvas');
   const rx = Math.round(canvas.width * 0.15);
   const ry = Math.round(canvas.height * 0.20);
@@ -753,7 +769,7 @@ function decodeRoi(canvas) {
   scanRoi.height = Math.max(120, Math.round(640 * rh / rw));
   scanRoi.getContext('2d', { willReadFrequently: true })
     .drawImage(canvas, rx, ry, rw, rh, 0, 0, scanRoi.width, scanRoi.height);
-  return decodeWithZxing(scanRoi);
+  return decodeWithZxing(scanRoi, tryHarder);
 }
 
 // Continuous decode loop: try every FRAME_INTERVAL ms
