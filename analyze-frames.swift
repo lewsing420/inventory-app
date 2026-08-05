@@ -21,13 +21,19 @@ func analyze(_ path: String) {
   }
 
   let name = (path as NSString).lastPathComponent
+  let W = cgImage.width, H = cgImage.height
   if let results = request.results, !results.isEmpty {
     for b in results {
       let conf = String(format: "%.2f", b.confidence)
-      print("🎯 \(name) → 识别到条码: \(b.payloadStringValue ?? "?") (\(b.symbology.rawValue) 置信度\(conf))")
+      let bb = b.boundingBox // 归一化坐标（左下角原点）
+      let x = Int(bb.origin.x * CGFloat(W))
+      let y = Int((1 - bb.origin.y - bb.size.height) * CGFloat(H))
+      let bw = Int(bb.size.width * CGFloat(W))
+      let bh = Int(bb.size.height * CGFloat(H))
+      print("🎯 \(name) \(W)x\(H) → 条码 \(b.payloadStringValue ?? "?") 置信度\(conf) 位置(x:\(x),y:\(y) 尺寸:\(bw)x\(bh) 占宽:\(Int(100 * bb.size.width))%)")
     }
   } else {
-    print("❌ \(name) → 无条码")
+    print("❌ \(name) \(W)x\(H) → 无条码")
   }
 }
 

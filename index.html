@@ -167,7 +167,7 @@ button { cursor: pointer; border: none; outline: none; }
           <p>👆 点击取景框打开相机扫码</p>
         </div>
         <video id="barcodeVideo" autoplay playsinline muted style="width:100%;height:260px;object-fit:cover;display:none;"></video>
-        <canvas id="captureCanvas" style="display:none;"></canvas>
+        <canvas id="captureCanvas" style="position:fixed;left:-10000px;top:0;width:10px;height:10px;"></canvas>
         <div class="scan-line"></div>
         <div class="scan-flash" id="scanFlash"></div>
         <div class="scan-corner tl"></div>
@@ -661,34 +661,46 @@ async function toggleCamera() {
   appState.isScanning = true;
   document.getElementById('captureNowBtn').style.display = 'block';
 
-  // Open camera at low resolution: smaller frames decode much faster,
-  // enabling true continuous scanning instead of one shot per 2 seconds
-  try {
-    let stream = null;
+  // Open camera with zoom if available (iOS 17+ Safari supports hardware zoom),
+  // fall back to CSS software zoom (2x crop) otherwise
+  const ZOOM = 2;
+  let stream = null;
+  let actualZoom = 1;
+  const attempts = [
+    { video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, zoom: { ideal: ZOOM }, focusMode: 'continuous' } },
+    { video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, zoom: { ideal: ZOOM } } },
+    { video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, focusMode: 'continuous' } },
+    { video: { facingMode: 'environment' } },
+  ];
+  for (const c of attempts) {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, focusMode: 'continuous' }
-      });
-    } catch(e) {
-      dbg('focusMode constraint failed, retry basic: ' + e.message);
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
-      });
+      stream = await navigator.mediaDevices.getUserMedia(c);
+      break;
+    } catch (e) {
+      dbg('相机约束尝试失败: ' + (e.message || e.name).toString().slice(0, 60));
     }
-    video.srcObject = stream;
-    await video.play();
-    scanStream = stream;
-  } catch(err) {
+  }
+  if (!stream) {
     appState.isScanning = false;
     area.classList.remove('active');
     video.style.display = 'none';
-    if (err.toString().includes('NotAllowedError') || err.toString().includes('Permission')) {
-      showToast('⚠️ 请在设置中允许相机权限');
-    } else {
-      showToast('⚠️ 无法打开相机，请手动输入条码');
-      document.getElementById('manualEntry').classList.add('show');
-    }
+    showToast('⚠️ 无法打开相机，请手动输入条码');
+    document.getElementById('manualEntry').classList.add('show');
     return;
+  }
+  try {
+    const s = stream.getVideoTracks()[0].getSettings();
+    if (s.zoom) actualZoom = s.zoom;
+  } catch (e) { /* ignore */ }
+  dbg('相机 zoom: ' + actualZoom);
+  video.srcObject = stream;
+  await video.play();
+  scanStream = stream;
+  // 无硬件 zoom 时用 CSS 2x 软件放大取景画面（所见即所得）
+  if (actualZoom < 1.5) {
+    video.style.transform = 'scale(2)';
+    video.style.transformOrigin = 'center';
+    dbg('软件变焦: CSS scale(2)');
   }
 
   showToast('📷 对准条码，自动识别...');
@@ -758,12 +770,18 @@ function decodeWithZxing(canvas, tryHarder) {
   }
 }
 
-// Zoom into the center region and retry (barcode fills more of the frame)
+// Zoom into the center 50% region (2x effective zoom) and retry.
+// 条码拍得小（iPhone 近摄距离有限）时，放大裁切后解码成功率大增
 function decodeRoi(canvas, tryHarder) {
-  if (!scanRoi) scanRoi = document.createElement('canvas');
-  const rx = Math.round(canvas.width * 0.15);
-  const ry = Math.round(canvas.height * 0.20);
-  const rw = canvas.width - rx * 2;
+  if (!scanRoi) {
+    scanRoi = document.createElement('canvas');
+    scanRoi.id = 'scanRoi';
+    scanRoi.style.cssText = 'position:fixed;left:-10000px;top:0;width:10px;height:10px;';
+    document.body.appendChild(scanRoi); // 挂载到 DOM，避免 iOS 上未挂载 canvas 的兼容问题
+  }
+  const rx = Math.round(canvas.width * 0.25);
+  const ry = Math.round(canvas.height * 0.25);
+  const rw = canvas.width - rx * 2;  // 中心 50%
   const rh = canvas.height - ry * 2;
   scanRoi.width = 640;
   scanRoi.height = Math.max(120, Math.round(640 * rh / rw));
@@ -859,6 +877,9 @@ function stopScanner() {
     scanStream.getTracks().forEach(t => t.stop());
     scanStream = null;
   }
+  // Reset software zoom
+  const video = document.getElementById('barcodeVideo');
+  if (video) video.style.transform = '';
   appState.isScanning = false;
   document.getElementById('captureNowBtn').style.display = 'none';
   lastCode = null;
