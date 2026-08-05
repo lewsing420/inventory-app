@@ -426,6 +426,7 @@ async function captureNow() {
       return;
     }
   }
+  if (DEBUG_MODE) uploadFrame('manual-fail'); // 调试模式：把失败帧上传给开发者看
   showShutterFlash();
   showToast('📷 未识别到条码，请调整角度');
 }
@@ -591,6 +592,16 @@ function startRemoteDebug() {
 }
 if (location.search.includes('debug')) {
   window.addEventListener('load', startRemoteDebug);
+}
+
+// 调试模式：上传当前帧截图到服务器（仅 ?debug=1），用于远程查看真机画面
+async function uploadFrame(label) {
+  try {
+    const canvas = document.getElementById('captureCanvas');
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.7));
+    await fetch('/upload?label=' + encodeURIComponent(label), { method: 'POST', body: blob });
+    dbg('📤 已上传截图 (' + label + ')');
+  } catch (e) { /* 服务器不可达时静默 */ }
 }
 if ('BarcodeDetector' in window) {
   setStatus('✅ BarcodeDetector API 可用');
@@ -804,6 +815,10 @@ function onFrameMiss() {
   if (DEBUG_MODE && frameSeq % 15 === 0) {
     const v = document.getElementById('barcodeVideo');
     dbg('⏳ 已连续 ' + frameSeq + ' 帧未命中（视频 ' + (v.videoWidth || 0) + 'x' + (v.videoHeight || 0) + ', ZXing=' + (!!zxingReader) + ', native=' + (!!nativeDetector) + '）');
+  }
+  // 调试模式：每 45 帧上传一帧截图，开发者可查看真机画面
+  if (DEBUG_MODE && frameSeq % 45 === 0) {
+    uploadFrame('frame-' + frameSeq);
   }
 }
 
