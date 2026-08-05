@@ -666,10 +666,11 @@ async function toggleCamera() {
   const ZOOM = 2;
   let stream = null;
   let actualZoom = 1;
+  // 高分辨率流：硬件 zoom 只是裁切不增密度，流分辨率翻倍才能让条码纹路足够粗（~4px/模块）
   const attempts = [
-    { video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, zoom: { ideal: ZOOM }, focusMode: 'continuous' } },
-    { video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, zoom: { ideal: ZOOM } } },
-    { video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, focusMode: 'continuous' } },
+    { video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 }, zoom: { ideal: ZOOM }, focusMode: 'continuous' } },
+    { video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 }, zoom: { ideal: ZOOM } } },
+    { video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 }, focusMode: 'continuous' } },
     { video: { facingMode: 'environment' } },
   ];
   for (const c of attempts) {
@@ -728,8 +729,9 @@ function grabAndDecode(video) {
   try {
     const canvas = document.getElementById('captureCanvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    canvas.width = 640;
-    canvas.height = Math.max(120, Math.round(640 * video.videoHeight / video.videoWidth));
+    // 960 宽解码：条码纹路像素密度足够（>3px/模块），ZXing 稳定性大增
+    canvas.width = 960;
+    canvas.height = Math.max(120, Math.round(960 * video.videoHeight / video.videoWidth));
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     let code = decodeWithZxing(canvas, false);
     if (!code) code = decodeRoi(canvas, false);
@@ -783,8 +785,8 @@ function decodeRoi(canvas, tryHarder) {
   const ry = Math.round(canvas.height * 0.25);
   const rw = canvas.width - rx * 2;  // 中心 50%
   const rh = canvas.height - ry * 2;
-  scanRoi.width = 640;
-  scanRoi.height = Math.max(120, Math.round(640 * rh / rw));
+  scanRoi.width = 960;
+  scanRoi.height = Math.max(120, Math.round(960 * rh / rw));
   scanRoi.getContext('2d', { willReadFrequently: true })
     .drawImage(canvas, rx, ry, rw, rh, 0, 0, scanRoi.width, scanRoi.height);
   return decodeWithZxing(scanRoi, tryHarder);
@@ -1193,8 +1195,9 @@ function addToSheet() {
   appState.currentProduct = null;
   appState.currentBarcode = null;
 
-  // Show continue scanning hint
-  showToast('✅ 已添加，点击取景框继续扫码');
+  // 连续盘点：自动重新打开相机，直接扫下一个
+  showToast('✅ 已添加，继续扫码...');
+  setTimeout(() => { toggleCamera(); }, 400);
 }
 
 // ===== Sheet Management =====
@@ -1542,6 +1545,11 @@ function showModal(html) {
 function closeModal(e) {
   if (e && e.target !== document.getElementById('modalOverlay') && e.target.closest('.modal')) return;
   document.getElementById('modalOverlay').classList.remove('show');
+  // 在扫码页关闭弹窗且无待处理结果时，自动回到扫码状态（连续盘点）
+  const scanPage = document.getElementById('pageScan');
+  if (scanPage && scanPage.classList.contains('active') && !appState.isScanning && !appState.currentProduct) {
+    setTimeout(() => { toggleCamera(); }, 300);
+  }
 }
 
 // ===== Toast =====
