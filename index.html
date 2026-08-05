@@ -426,7 +426,7 @@ async function captureNow() {
       return;
     }
   }
-  if (DEBUG_MODE) uploadFrame('manual-fail'); // 调试模式：把失败帧上传给开发者看
+  if (REMOTE_ACTIVE) uploadFrame('manual-fail'); // 调试模式：把失败帧上传给开发者看
   showShutterFlash();
   showToast('📷 未识别到条码，请调整角度');
 }
@@ -518,7 +518,8 @@ let lastCode = null;         // Code seen in previous frames
 let lastCodeFrames = 0;      // Consecutive hit count (debounce)
 const FRAME_INTERVAL = 150;  // ms between decode attempts
 const CONFIRM_FRAMES = 2;    // Same code must hit N frames before accepting
-const DEBUG_MODE = true;     // 诊断模式常开：日志+截图自动上报本地服务器，/log 端点不存在时静默
+// 诊断开关：?debug=1 或探测到本地 /log 服务器时自动开启（生产部署无 /log 则自动关闭）
+let REMOTE_ACTIVE = location.search.includes('debug');
 const debugLog = [];
 
 function dbg(msg) {
@@ -584,9 +585,10 @@ let remoteDebugTimer = null;
 function startRemoteDebug() {
   if (remoteDebugTimer) return;
   dbg('📡 远程日志上报启动探测');
-  fetch('/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ logs: ['📱 页面已加载 v3', 'UA: ' + navigator.userAgent.slice(0, 100)] }) })
+  fetch('/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ logs: ['📱 页面已加载', 'UA: ' + navigator.userAgent.slice(0, 100)] }) })
     .then(() => {
       dbg('✅ /log 探测成功，持续上报中');
+      REMOTE_ACTIVE = true;
       remoteDebugTimer = setInterval(async () => {
         try {
           await fetch('/log', {
@@ -848,12 +850,12 @@ function onFrameMiss() {
   lastCode = null;
   lastCodeFrames = 0;
   // 调试模式：每 15 帧汇总一次，便于远程定位"相机开着但一直解不出"的情况
-  if (DEBUG_MODE && frameSeq % 15 === 0) {
+  if (REMOTE_ACTIVE && frameSeq % 15 === 0) {
     const v = document.getElementById('barcodeVideo');
     dbg('⏳ 已连续 ' + frameSeq + ' 帧未命中（视频 ' + (v.videoWidth || 0) + 'x' + (v.videoHeight || 0) + ', ZXing=' + (!!zxingReader) + ', native=' + (!!nativeDetector) + '）');
   }
   // 调试模式：每 45 帧上传一帧截图，开发者可查看真机画面
-  if (DEBUG_MODE && frameSeq % 45 === 0) {
+  if (REMOTE_ACTIVE && frameSeq % 45 === 0) {
     uploadFrame('frame-' + frameSeq);
   }
 }
