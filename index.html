@@ -168,7 +168,6 @@ button { cursor: pointer; border: none; outline: none; }
         </div>
         <video id="barcodeVideo" autoplay playsinline muted style="width:100%;height:260px;object-fit:cover;display:none;"></video>
         <canvas id="captureCanvas" style="display:none;"></canvas>
-        <div id="scanFileReader" style="display:none;"></div>
         <div class="scan-line"></div>
         <div class="scan-flash" id="scanFlash"></div>
         <div class="scan-corner tl"></div>
@@ -327,7 +326,12 @@ button { cursor: pointer; border: none; outline: none; }
 <div class="toast" id="toast"></div>
 
 <!-- Debug Panel -->
-<div class="debug-panel" id="debugPanel"><div id="debugPanelBody">等待调试信息...</div></div>
+<div class="debug-panel" id="debugPanel">
+  <div style="text-align:right;margin-bottom:4px;">
+    <button onclick="copyDebugLog()" style="background:rgba(255,255,255,0.12);color:#0f0;border:1px solid rgba(0,255,0,0.35);border-radius:6px;font-size:11px;padding:2px 10px;">📋 复制日志</button>
+  </div>
+  <div id="debugPanelBody">等待调试信息...</div>
+</div>
 <button class="debug-toggle" id="debugToggle" onclick="toggleDebugPanel()">🐛</button>
 
 <!-- Debug status bar (always visible) -->
@@ -335,21 +339,8 @@ button { cursor: pointer; border: none; outline: none; }
   <div id="scanStatusText">初始化扫码器...</div>
 </div>
 
-<!-- html5-qrcode library - try multiple CDNs -->
-<script src="https://unpkg.com/html5-qrcode@2.3.8/dist/html5-qrcode.min.js"></script>
-<script>
-// Fallback: if cdnjs doesn't load either, try inline a minimal version
-window.addEventListener('load', function() {
-  if (typeof Html5Qrcode === 'undefined') {
-    console.warn('html5-qrcode CDN failed to load, trying cdnjs...');
-    var s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js';
-    s.onload = function() { console.log('html5-qrcode loaded from cdnjs'); };
-    s.onerror = function() { console.error('All CDNs failed for html5-qrcode'); };
-    document.head.appendChild(s);
-  }
-});
-</script>
+<!-- ZXing barcode engine (local file, no CDN) -->
+<script src="lib/zxing.min.js"></script>
 <script>
 // ===== Debug Status Bar (visible on screen) =====
 function showStatusBar(show) {
@@ -372,7 +363,6 @@ let appState = {
   currentBarcode: null, // Currently scanned barcode
   currentProduct: null, // Currently scanned product info
   currentQty: 1,        // Current quantity for scanned product
-  scanner: null,        // html5qrcode instance
   isScanning: false,    // Whether camera is active
   isProcessing: false,  // Lock flag to prevent race on scan callback
 };
@@ -384,17 +374,22 @@ function init() {
   loadSettings();
   renderSheetList();
   renderCurrentItems();
+  initZxingReader();
 
   // Request camera permission on load (hidden)
   initCameraPermission();
 }
 
 function initCameraPermission() {
-  // Just check if cameras available - triggers permission dialog on iOS
-  Html5Qrcode.getCameras().then(cameras => {
-    if (cameras && cameras.length > 0) {
-      console.log('Camera available:', cameras.length);
-      setStatus('✅ 检测到 ' + cameras.length + ' 个摄像头');
+  // Check camera availability without opening stream (triggers permission dialog on iOS)
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  navigator.mediaDevices.enumerateDevices().then(devices => {
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    if (cams.length > 0) {
+      console.log('Camera available:', cams.length);
+      setStatus('✅ 检测到 ' + cams.length + ' 个摄像头');
+    } else {
+      setStatus('⚠️ 未检测到摄像头');
     }
   }).catch(err => {
     console.log('Camera access not yet granted:', err);
@@ -412,7 +407,7 @@ function toggleDebugPanel() {
 }
 
 // ===== Manual Capture (tap to scan now) =====
-function captureNow() {
+async function captureNow() {
   const video = document.getElementById('barcodeVideo');
   if (!appState.isScanning || !video || !video.srcObject) {
     showToast('📷 请先打开相机');
@@ -420,14 +415,19 @@ function captureNow() {
   }
   dbg('👉 Manual capture triggered');
   window._captureCount = (window._captureCount || 0) + 1;
-  captureAndScan(video).then(result => {
-    if (result) {
-      dbg('✅ Manual capture success: ' + result.code);
-      onBarcodeDetected(result.code, { format: result.format });
-    } else {
-      showToast('📷 未识别到条码，请调整角度');
+  // Bypass debounce: grab up to 3 frames, any hit confirms immediately
+  for (let i = 0; i < 3; i++) {
+    const code = grabAndDecode(video);
+    if (code) {
+      dbg('✅ Manual capture success: ' + code);
+      showShutterFlash();
+      stopScanner();
+      onBarcodeDetected(code, { format: 'EAN_13' });
+      return;
     }
-  });
+  }
+  showShutterFlash();
+  showToast('📷 未识别到条码，请调整角度');
 }
 
 // ===== Data Persistence =====
@@ -504,11 +504,17 @@ function createNewSheet(name) {
   return sheet;
 }
 
-// ===== Camera — Still-capture scanner =====
+// ===== Camera — Continuous frame scanner (ZXing) =====
 let scanStream = null;
-let captureTimer = null;
+let frameTimer = null;
 let nativeDetector = null;
-let html5QrFileReader = null;
+let zxingReader = null;
+let scanRoi = null;          // Pre-allocated ROI canvas (center zoom)
+let frameSeq = 0;            // Frame sequence, used to drop stale async results
+let lastCode = null;         // Code seen in previous frames
+let lastCodeFrames = 0;      // Consecutive hit count (debounce)
+const FRAME_INTERVAL = 150;  // ms between decode attempts
+const CONFIRM_FRAMES = 2;    // Same code must hit N frames before accepting
 const debugLog = [];
 
 function dbg(msg) {
@@ -524,7 +530,47 @@ function dbg(msg) {
   }
 }
 
-// Get supported barcode formats on load
+// Init ZXing reader with a restricted format set (toys shop = EAN-13 mostly)
+// Restricting formats makes decoding 3-5x faster
+function initZxingReader() {
+  if (typeof ZXing === 'undefined') {
+    dbg('❌ ZXing library failed to load (lib/zxing.min.js)');
+    setStatus('❌ ZXing 引擎加载失败，无法扫码');
+    return;
+  }
+  try {
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+      ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.CODE_128,
+    ]);
+    zxingReader = new ZXing.MultiFormatReader();
+    zxingReader.setHints(hints);
+    dbg('✅ ZXing reader ready (EAN_13/EAN_8/UPC_A/CODE_128)');
+    setStatus('✅ ZXing 引擎就绪');
+  } catch(e) {
+    dbg('❌ ZXing init error: ' + e.message);
+    setStatus('❌ ZXing 初始化失败: ' + e.message.substring(0,40));
+  }
+}
+
+function copyDebugLog() {
+  const text = debugLog.join('\n');
+  const done = () => showToast('✅ 日志已复制，粘贴发给开发者');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch(e) { showToast('⚠️ 复制失败，请手动截图 🐛 面板'); }
+  document.body.removeChild(ta);
+}
 if ('BarcodeDetector' in window) {
   setStatus('✅ BarcodeDetector API 可用');
   (async () => {
@@ -557,7 +603,7 @@ if ('BarcodeDetector' in window) {
   })();
 } else {
   dbg('❌ BarcodeDetector NOT available in this browser');
-  setStatus('❌ BarcodeDetector 不可用，将使用 html5-qrcode 备用方案');
+  setStatus('❌ BarcodeDetector 不可用，将使用 ZXing 引擎');
 }
 
 async function toggleCamera() {
@@ -576,11 +622,20 @@ async function toggleCamera() {
   appState.isScanning = true;
   document.getElementById('captureNowBtn').style.display = 'block';
 
-  // Open camera (viewfinder)
+  // Open camera at low resolution: smaller frames decode much faster,
+  // enabling true continuous scanning instead of one shot per 2 seconds
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
-    });
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, focusMode: 'continuous' }
+      });
+    } catch(e) {
+      dbg('focusMode constraint failed, retry basic: ' + e.message);
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+      });
+    }
     video.srcObject = stream;
     await video.play();
     scanStream = stream;
@@ -597,9 +652,9 @@ async function toggleCamera() {
     return;
   }
 
-  showToast('📷 对准条码，自动拍照识别...');
+  showToast('📷 对准条码，自动识别...');
 
-  // Wait for video to have actual dimensions
+  // Wait for video to have actual dimensions (iOS bug: videoWidth may be 0)
   if (!video.videoWidth || !video.videoHeight) {
     await new Promise(resolve => {
       video.addEventListener('loadedmetadata', resolve, { once: true });
@@ -607,134 +662,112 @@ async function toggleCamera() {
     });
   }
   console.log('Video ready:', video.videoWidth, 'x', video.videoHeight);
-  setStatus('✅ 相机已开启，等待扫码...');
+  setStatus('✅ 相机已开启 (' + video.videoWidth + 'x' + video.videoHeight + ')，等待扫码...');
   showStatusBar(true);
 
-  // Auto-capture every 2 seconds (non-overlapping)
-  if (captureTimer) clearInterval(captureTimer);
-  let captureAttempts = 0;
-  window._captureCount = 0;
-  captureTimer = setInterval(async () => {
-    if (!appState.isScanning) return;
-    if (window._isCapturing) return; // skip if previous still processing
-    window._isCapturing = true;
-    captureAttempts++;
-    window._captureCount++;
-    try {
-      const result = await captureAndScan(video);
-      if (result) {
-        console.log('BARCODE FOUND:', result.code, result.format);
-        onBarcodeDetected(result.code, { format: result.format });
-      } else if (captureAttempts >= 5) {
-        showToast('📷 未识别到条码，请调整角度或用手动输入');
-      }
-    } finally {
-      window._isCapturing = false;
-    }
-  }, 2000);
+  // Start continuous frame decoding loop
+  startFrameLoop(video);
 }
 
-async function captureAndScan(video) {
-  // Ensure video has actual dimensions (iOS bug: videoWidth may be 0)
-  if (!video.videoWidth || !video.videoHeight) {
-    dbg('Waiting for video dimensions...');
-    for (let i = 0; i < 20; i++) {
-      await new Promise(r => requestAnimationFrame(r));
-      if (video.videoWidth && video.videoHeight) break;
-    }
-  }
-  const w = video.videoWidth || 1280;
-  const h = video.videoHeight || 720;
-  dbg('Capture: ' + w + 'x' + h + ' | attempt: ' + window._captureCount);
-  setStatus('📸 截图识别中 (' + w + 'x' + h + ')...');
+// Grab one frame and decode it (full frame first, then center ROI zoom)
+function grabAndDecode(video) {
+  if (!video.videoWidth || !video.videoHeight) return null;
+  const canvas = document.getElementById('captureCanvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  canvas.width = 640;
+  canvas.height = Math.max(120, Math.round(640 * video.videoHeight / video.videoWidth));
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  let code = decodeWithZxing(canvas);
+  if (!code) code = decodeRoi(canvas);
+  return code;
+}
 
-  // === STRATEGY A: Try BarcodeDetector.detect(video) directly ===
-  // iOS supports detect() on video elements better than on canvas
-  if (nativeDetector && video.readyState >= 2) {
-    try {
-      const barcodes = await nativeDetector.detect(video);
-      dbg('detect(video) returned: ' + (barcodes ? barcodes.length : 'null') + ' barcodes');
+// Decode a canvas with ZXing; returns trimmed code string or null
+function decodeWithZxing(canvas) {
+  if (!zxingReader) return null;
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    // RGBLuminanceSource expects Int32Array packed pixels (r<<16|g<<8|b),
+    // NOT raw RGBA bytes — feeding RGBA makes every decode fail silently.
+    const px = imageData.data;
+    const packed = new Int32Array(canvas.width * canvas.height);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+      packed[j] = (px[i] << 16) | (px[i + 1] << 8) | px[i + 2];
+    }
+    const lum = new ZXing.RGBLuminanceSource(packed, canvas.width, canvas.height);
+    const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
+    const result = zxingReader.decode(bitmap);
+    return result ? result.getText().trim() : null;
+  } catch(e) {
+    return null; // NotFoundException etc. — not a real error
+  }
+}
+
+// Zoom into the center region and retry (barcode fills more of the frame)
+function decodeRoi(canvas) {
+  if (!scanRoi) scanRoi = document.createElement('canvas');
+  const rx = Math.round(canvas.width * 0.15);
+  const ry = Math.round(canvas.height * 0.20);
+  const rw = canvas.width - rx * 2;
+  const rh = canvas.height - ry * 2;
+  scanRoi.width = 640;
+  scanRoi.height = Math.max(120, Math.round(640 * rh / rw));
+  scanRoi.getContext('2d', { willReadFrequently: true })
+    .drawImage(canvas, rx, ry, rw, rh, 0, 0, scanRoi.width, scanRoi.height);
+  return decodeWithZxing(scanRoi);
+}
+
+// Continuous decode loop: try every FRAME_INTERVAL ms
+function startFrameLoop(video) {
+  if (frameTimer) clearInterval(frameTimer);
+  lastCode = null;
+  lastCodeFrames = 0;
+  frameSeq = 0;
+  dbg('▶️ 连续帧扫描启动 (每 ' + FRAME_INTERVAL + 'ms)');
+  frameTimer = setInterval(() => { processFrame(video); }, FRAME_INTERVAL);
+}
+
+function processFrame(video) {
+  if (!appState.isScanning) return;
+  const seq = ++frameSeq;
+  const code = grabAndDecode(video);
+  if (code) {
+    onFrameHit(code);
+  } else {
+    onFrameMiss();
+  }
+  // Native BarcodeDetector in parallel (canvas detect is reliable on iOS)
+  if (nativeDetector) {
+    nativeDetector.detect(document.getElementById('captureCanvas')).then(barcodes => {
+      if (seq !== frameSeq) return; // stale frame result, drop it
       for (const b of barcodes) {
-        const code = b.rawValue.trim();
-        if (code) {
-          dbg('✅ detect(video) success: ' + code + ' (' + b.format + ')');
-          setStatus('✅ 识别到条码: ' + code);
-          return { code, format: b.format };
-        }
+        const c = b.rawValue.trim();
+        if (c) { onFrameHit(c); return; }
       }
-      if (barcodes.length > 0) {
-        setStatus('⚠️ detect(video) 找到条码但值为空');
-      } else {
-        setStatus('⏳ Strategy A: 未检测到条码');
-      }
-    } catch(e) {
-      dbg('detect(video) error: ' + e.message);
-      setStatus('❌ Strategy A 错误: ' + e.message.substring(0,40));
+    }).catch(() => {});
+  }
+}
+
+// Debounce: same code on CONFIRM_FRAMES frames before accepting
+function onFrameHit(code) {
+  if (code === lastCode) {
+    lastCodeFrames++;
+    if (lastCodeFrames >= CONFIRM_FRAMES) {
+      dbg('✅ 连续 ' + lastCodeFrames + ' 帧确认: ' + code);
+      console.log('BARCODE FOUND:', code);
+      stopScanner();
+      onBarcodeDetected(code, { format: 'EAN_13' });
     }
   } else {
-    dbg('detect(video) skipped - nativeDetector: ' + (!!nativeDetector) + ', readyState: ' + video.readyState);
-    setStatus('⚠️ BarcodeDetector 不可用 (native=' + (!!nativeDetector) + ', state=' + video.readyState + ')');
+    lastCode = code;
+    lastCodeFrames = 1;
   }
+}
 
-  // === STRATEGY B: Canvas capture + detect ===
-  const canvas = document.getElementById('captureCanvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  // Wait one more frame to ensure video frame is rendered
-  await new Promise(r => requestAnimationFrame(r));
-  ctx.drawImage(video, 0, 0, w, h);
-
-  // Flash effect + feedback
-  showShutterFlash();
-
-  // Try native BarcodeDetector on still frame (canvas)
-  if (nativeDetector) {
-    try {
-      const barcodes = await nativeDetector.detect(canvas);
-      dbg('detect(canvas) returned: ' + (barcodes ? barcodes.length : 'null') + ' barcodes');
-      for (const b of barcodes) {
-        const code = b.rawValue.trim();
-        if (code) {
-          dbg('✅ detect(canvas) success: ' + code + ' (' + b.format + ')');
-          setStatus('✅ 识别到条码(画布): ' + code);
-          return { code, format: b.format };
-        }
-      }
-      if (barcodes.length > 0) {
-        dbg('Barcodes found but empty value');
-        setStatus('⚠️ 画布找到条码但值为空');
-      } else {
-        setStatus('⏳ Strategy B: 画布未检测到条码');
-      }
-    } catch(e) { 
-      dbg('detect(canvas) error: ' + e.message);
-      setStatus('❌ Strategy B 错误: ' + e.message.substring(0,40));
-    }
-  }
-
-  // === STRATEGY C: html5-qrcode fallback ===
-  try {
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-    if (!html5QrFileReader) {
-      html5QrFileReader = new Html5Qrcode("scanFileReader");
-      dbg('Html5Qrcode reader initialized');
-    }
-    const result = await html5QrFileReader.scanFileV2(blob, false);
-    const code = result?.decodedText?.trim();
-    if (code) {
-      dbg('✅ html5-qrcode success: ' + code);
-      setStatus('✅ html5-qrcode 识别: ' + code);
-      return { code, format: 'EAN_13' };
-    }
-  } catch(e) {
-    dbg('html5-qrcode: ' + (e.message?.substring(0, 60) || 'no match'));
-    setStatus('⏳ Strategy C (html5-qrcode): ' + (e.message?.substring(0,30) || 'no match'));
-  }
-
-  dbg('❌ All strategies failed for this frame');
-  setStatus('❌ 本次截图未识别到条码');
-  return null;
+function onFrameMiss() {
+  lastCode = null;
+  lastCodeFrames = 0;
 }
 
 function showShutterFlash() {
@@ -747,20 +780,21 @@ function showShutterFlash() {
   setTimeout(() => el.classList.remove('active'), 300);
 }
 
-async function stopScanner() {
-  // Clear auto-capture timer
-  if (captureTimer) {
-    clearInterval(captureTimer);
-    captureTimer = null;
+function stopScanner() {
+  // Stop continuous frame loop
+  if (frameTimer) {
+    clearInterval(frameTimer);
+    frameTimer = null;
   }
   // Stop camera stream
   if (scanStream) {
     scanStream.getTracks().forEach(t => t.stop());
     scanStream = null;
   }
-  // Stop html5-qrcode file reader (no-op, just cleanup)
   appState.isScanning = false;
   document.getElementById('captureNowBtn').style.display = 'none';
+  lastCode = null;
+  lastCodeFrames = 0;
 }
 
 function onBarcodeDetected(decodedText, decodedResult) {

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>扫码引擎浏览器自测</title>
+<style>
+body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #1a1a2e; }
+h1 { font-size: 20px; }
+.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 12px 0; }
+canvas { max-width: 100%; background: #fff; border: 1px solid #eee; }
+.pass { color: #059669; font-weight: 600; }
+.fail { color: #dc2626; font-weight: 600; }
+code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>📷 扫码引擎浏览器自测</h1>
+<p>验证：<code>lib/zxing.min.js</code> 加载 → 生成条码 → 走与 index.html 相同的解码管线</p>
+
+<div class="card">
+  <div id="result">运行中...</div>
+</div>
+
+<div class="card">
+  <div style="margin-bottom:8px;font-weight:600;">测试条码 1：6901234567892（完整尺寸）</div>
+  <canvas id="c1" width="420" height="200"></canvas>
+</div>
+<div class="card">
+  <div style="margin-bottom:8px;font-weight:600;">测试条码 2：6920300103376（小尺寸，模拟条码偏小场景）</div>
+  <canvas id="c2" width="210" height="80"></canvas>
+</div>
+
+<script src="lib/zxing.min.js"></script>
+<script>
+// ===== 与 index.html 完全相同的 EAN-13 位模式表 =====
+const L = ['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011'];
+const G = ['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111'];
+const R = ['1110010','1100110','1101100','1000010','1011100','1001110','1010000','1000100','1001000','1110100'];
+const PATTERNS = { 0:'LLLLLL',1:'LLGLGG',2:'LLGGLG',3:'LLGGGL',4:'LGLLGG',5:'LGGLLG',6:'LGGGLL',7:'LGLGLG',8:'LGLGGL',9:'LGGLGL' };
+
+function drawEan13(canvas, code12, moduleWidth) {
+  const d = String(code12).split('').map(Number);
+  let sum = 0;
+  for (let i = 0; i < 12; i++) sum += (i % 2 === 0 ? 1 : 3) * d[i];
+  const check = (10 - (sum % 10)) % 10;
+  d.push(check);
+  const pattern = PATTERNS[d[0]];
+  let bits = '101';
+  for (let i = 1; i <= 6; i++) bits += (pattern[i - 1] === 'L' ? L : G)[d[i]];
+  bits += '01010';
+  for (let i = 7; i <= 12; i++) bits += R[d[i]];
+  bits += '101';
+
+  // 整像素渲染 + 两侧 ≥9 模块静区（EAN 规范要求，真实商品条码自带）
+  const mw = moduleWidth || 4;
+  const M = mw * 10; // 左右留白：静区
+  canvas.width = bits.length * mw + M * 2;
+  canvas.height = 120;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const top = 10, bh = 100;
+  ctx.fillStyle = '#000';
+  for (let i = 0; i < bits.length; i++) {
+    if (bits[i] === '1') ctx.fillRect(M + i * mw, top, mw, bh);
+  }
+  return d.join('');
+}
+
+// ===== 与 index.html 完全相同的解码逻辑 =====
+let lastDecodeError = '';
+function decodeWithZxing(canvas, reader) {
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const px = imageData.data;
+    const packed = new Int32Array(canvas.width * canvas.height);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+      packed[j] = (px[i] << 16) | (px[i + 1] << 8) | px[i + 2];
+    }
+    const lum = new ZXing.RGBLuminanceSource(packed, canvas.width, canvas.height);
+    const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
+    const result = reader.decode(bitmap);
+    return result ? result.getText().trim() : null;
+  } catch (e) {
+    lastDecodeError = (e && e.constructor && e.constructor.name) + ': ' + String(e.message || e).slice(0, 150);
+    return null;
+  }
+}
+
+// ===== 运行测试 =====
+const resultEl = document.getElementById('result');
+const results = [];
+
+try {
+  if (typeof ZXing === 'undefined') throw new Error('ZXing 库未加载');
+  results.push(['ZXing 库加载', true, 'OK']);
+
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.CODE_128,
+  ]);
+  const reader = new ZXing.MultiFormatReader();
+  reader.setHints(hints);
+  results.push(['MultiFormatReader 初始化', true, 'OK']);
+
+  // 测试 1：完整尺寸
+  const c1 = document.getElementById('c1');
+  const fullCode = drawEan13(c1, '690123456789', 4);
+  lastDecodeError = '';
+  const r1 = decodeWithZxing(c1, reader);
+  results.push(['完整尺寸解码', r1 === fullCode, r1 === fullCode ? 'PASS → ' + r1 : '期望 ' + fullCode + ' 实际 ' + r1 + (lastDecodeError ? ' 错误: ' + lastDecodeError : '')]);
+
+  // 测试 2：小尺寸
+  const c2 = document.getElementById('c2');
+  const smallCode = drawEan13(c2, '692030010337', 1);
+  lastDecodeError = '';
+  const r2 = decodeWithZxing(c2, reader);
+  results.push(['小尺寸解码', r2 === smallCode, r2 === smallCode ? 'PASS → ' + r2 : '期望 ' + smallCode + ' 实际 ' + r2 + (lastDecodeError ? ' 错误: ' + lastDecodeError : '')]);
+
+  // 测试 3：BarcodeDetector 可用性（仅信息）
+  results.push(['BarcodeDetector', 'BarcodeDetector' in window, 'BarcodeDetector' in window ? '可用（并行加速通道）' : '不可用（仅走 ZXing，正常）']);
+} catch (e) {
+  results.push(['异常', false, e.message]);
+}
+
+resultEl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:14px;">' +
+  results.map(([name, ok, detail]) =>
+    `<tr style="border-bottom:1px solid #f3f4f6;">
+       <td style="padding:6px 0;">${name}</td>
+       <td style="padding:6px 0;" class="${ok ? 'pass' : 'fail'}">${ok ? '✅' : '❌'}</td>
+       <td style="padding:6px 0;color:#6b7280;font-size:13px;">${detail}</td>
+     </tr>`).join('') + '</table>';
+</script>
+</body>
+</html>
