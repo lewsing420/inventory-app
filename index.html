@@ -515,6 +515,7 @@ let lastCode = null;         // Code seen in previous frames
 let lastCodeFrames = 0;      // Consecutive hit count (debounce)
 const FRAME_INTERVAL = 150;  // ms between decode attempts
 const CONFIRM_FRAMES = 2;    // Same code must hit N frames before accepting
+const DEBUG_MODE = location.search.includes('debug'); // ?debug=1 时输出逐帧诊断
 const debugLog = [];
 
 function dbg(msg) {
@@ -570,6 +571,26 @@ function fallbackCopy(text, done) {
   ta.select();
   try { document.execCommand('copy'); done(); } catch(e) { showToast('⚠️ 复制失败，请手动截图 🐛 面板'); }
   document.body.removeChild(ta);
+}
+
+// ===== 远程调试日志上报 (?debug=1) =====
+// 把 debugLog 定时 POST 到 /log，开发者直接在服务器端查看真机每帧识别情况
+let remoteDebugTimer = null;
+function startRemoteDebug() {
+  if (remoteDebugTimer) return;
+  dbg('📡 远程日志上报已启动');
+  remoteDebugTimer = setInterval(async () => {
+    try {
+      await fetch('/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: debugLog.slice(-60) }),
+      });
+    } catch (e) { /* 服务器不可达时静默 */ }
+  }, 2000);
+}
+if (location.search.includes('debug')) {
+  window.addEventListener('load', startRemoteDebug);
 }
 if ('BarcodeDetector' in window) {
   setStatus('✅ BarcodeDetector API 可用');
@@ -671,15 +692,21 @@ async function toggleCamera() {
 
 // Grab one frame and decode it (full frame first, then center ROI zoom)
 function grabAndDecode(video) {
-  if (!video.videoWidth || !video.videoHeight) return null;
-  const canvas = document.getElementById('captureCanvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  canvas.width = 640;
-  canvas.height = Math.max(120, Math.round(640 * video.videoHeight / video.videoWidth));
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  let code = decodeWithZxing(canvas);
-  if (!code) code = decodeRoi(canvas);
-  return code;
+  // iOS quirk: videoWidth/Height may be set but readyState not ready — drawing would throw
+  if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
+  try {
+    const canvas = document.getElementById('captureCanvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    canvas.width = 640;
+    canvas.height = Math.max(120, Math.round(640 * video.videoHeight / video.videoWidth));
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    let code = decodeWithZxing(canvas);
+    if (!code) code = decodeRoi(canvas);
+    return code;
+  } catch (e) {
+    dbg('❌ 帧抓取/解码异常: ' + (e.name || '') + ' ' + (e.message || e).toString().slice(0, 100));
+    return null;
+  }
 }
 
 // Decode a canvas with ZXing; returns trimmed code string or null
@@ -731,7 +758,12 @@ function startFrameLoop(video) {
 function processFrame(video) {
   if (!appState.isScanning) return;
   const seq = ++frameSeq;
-  const code = grabAndDecode(video);
+  let code = null;
+  try {
+    code = grabAndDecode(video);
+  } catch (e) {
+    dbg('❌ 帧处理异常: ' + (e.name || '') + ' ' + (e.message || e).toString().slice(0, 100));
+  }
   if (code) {
     onFrameHit(code);
   } else {
@@ -768,6 +800,11 @@ function onFrameHit(code) {
 function onFrameMiss() {
   lastCode = null;
   lastCodeFrames = 0;
+  // 调试模式：每 15 帧汇总一次，便于远程定位"相机开着但一直解不出"的情况
+  if (DEBUG_MODE && frameSeq % 15 === 0) {
+    const v = document.getElementById('barcodeVideo');
+    dbg('⏳ 已连续 ' + frameSeq + ' 帧未命中（视频 ' + (v.videoWidth || 0) + 'x' + (v.videoHeight || 0) + ', ZXing=' + (!!zxingReader) + ', native=' + (!!nativeDetector) + '）');
+  }
 }
 
 function showShutterFlash() {

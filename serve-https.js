@@ -14,11 +14,37 @@ const mime = {
   '.svg': 'image/svg+xml',
 };
 
+// 远程调试日志：POST /log 接收（页面 ?debug=1 时上报），GET /log 查看
+const remoteLogs = [];
+
 https.createServer({
   key: fs.readFileSync(path.join(root, 'local-key.pem')),
   cert: fs.readFileSync(path.join(root, 'local-cert.pem')),
 }, (req, res) => {
   let p = decodeURIComponent(req.url.split('?')[0]);
+
+  if (req.method === 'POST' && p === '/log') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const stamped = (data.logs || []).map(l => `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${l}`);
+        remoteLogs.push(...stamped);
+        if (remoteLogs.length > 1000) remoteLogs.splice(0, remoteLogs.length - 1000);
+        console.log('📡 收到真机日志 ' + stamped.length + ' 条（共 ' + remoteLogs.length + '）');
+      } catch (e) { /* ignore */ }
+      res.writeHead(200); res.end('ok');
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && p === '/log') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(remoteLogs.join('\n') || '(暂无日志 — 手机打开 ?debug=1 页面扫码后这里会出现)');
+    return;
+  }
+
   if (p === '/') p = '/index.html';
   const file = path.join(root, p);
   if (!file.startsWith(root)) { res.writeHead(403); res.end('forbidden'); return; }
