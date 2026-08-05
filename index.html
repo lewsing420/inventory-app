@@ -330,9 +330,41 @@ button { cursor: pointer; border: none; outline: none; }
 <div class="debug-panel" id="debugPanel"><div id="debugPanelBody">等待调试信息...</div></div>
 <button class="debug-toggle" id="debugToggle" onclick="toggleDebugPanel()">🐛</button>
 
-<!-- html5-qrcode library -->
-<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/dist/html5-qrcode.min.js"></script>
+<!-- Debug status bar (always visible) -->
+<div id="scanStatusBar" style="display:none;position:fixed;bottom:60px;left:0;right:0;z-index:99;padding:8px 12px;font-size:12px;font-family:monospace;background:rgba(0,0,0,0.85);color:#0f0;text-align:center;max-width:480px;margin:0 auto;border-radius:8px 8px 0 0;">
+  <div id="scanStatusText">初始化扫码器...</div>
+</div>
+
+<!-- html5-qrcode library - try multiple CDNs -->
+<script src="https://unpkg.com/html5-qrcode@2.3.8/dist/html5-qrcode.min.js"></script>
 <script>
+// Fallback: if cdnjs doesn't load either, try inline a minimal version
+window.addEventListener('load', function() {
+  if (typeof Html5Qrcode === 'undefined') {
+    console.warn('html5-qrcode CDN failed to load, trying cdnjs...');
+    var s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js';
+    s.onload = function() { console.log('html5-qrcode loaded from cdnjs'); };
+    s.onerror = function() { console.error('All CDNs failed for html5-qrcode'); };
+    document.head.appendChild(s);
+  }
+});
+</script>
+<script>
+// ===== Debug Status Bar (visible on screen) =====
+function showStatusBar(show) {
+  const bar = document.getElementById('scanStatusBar');
+  if (bar) bar.style.display = show ? 'block' : 'none';
+}
+function setStatus(msg) {
+  const el = document.getElementById('scanStatusText');
+  if (el) el.textContent = msg;
+}
+function setStatusHTML(html) {
+  const el = document.getElementById('scanStatusText');
+  if (el) el.innerHTML = html;
+}
+
 // ===== State =====
 let appState = {
   sheets: [],           // [{id, name, createdAt, items: [{id, barcode, name, spec, brand, quantity, location, manualEntry, scannedAt}]}]
@@ -362,9 +394,11 @@ function initCameraPermission() {
   Html5Qrcode.getCameras().then(cameras => {
     if (cameras && cameras.length > 0) {
       console.log('Camera available:', cameras.length);
+      setStatus('✅ 检测到 ' + cameras.length + ' 个摄像头');
     }
   }).catch(err => {
     console.log('Camera access not yet granted:', err);
+    setStatus('❌ 相机权限: ' + (err.message?.substring(0,30) || '拒绝'));
   });
 }
 
@@ -492,17 +526,38 @@ function dbg(msg) {
 
 // Get supported barcode formats on load
 if ('BarcodeDetector' in window) {
+  setStatus('✅ BarcodeDetector API 可用');
   (async () => {
     let supported = [];
-    try { supported = await BarcodeDetector.getSupportedFormats(); } catch(e) { dbg('getSupportedFormats error: ' + e.message); }
+    try { supported = await BarcodeDetector.getSupportedFormats(); } catch(e) { dbg('getSupportedFormats error: ' + e.message); setStatus('⚠️ getSupportedFormats: ' + e.message.substring(0,30)); }
+    dbg('Supported formats: ' + (supported.join(', ') || 'none (fallback to defaults)'));
     const want = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf'];
     const use = supported.length ? want.filter(f => supported.includes(f)) : ['ean_13','ean_8','upc_a','code_128'];
     if (use.length === 0) use.push('ean_13','ean_8','upc_a');
-    try { nativeDetector = new BarcodeDetector({ formats: use }); } catch(e) { dbg('BarcodeDetector init error: ' + e.message); }
-    dbg('✅ BarcodeDetector ready, formats: ' + use.join(', '));
+    dbg('Using formats: ' + use.join(', '));
+    try { 
+      nativeDetector = new BarcodeDetector({ formats: use }); 
+      if (nativeDetector) {
+        dbg('✅ BarcodeDetector created successfully');
+        setStatus('✅ BarcodeDetector 已就绪');
+      }
+    } catch(e) { 
+      dbg('❌ BarcodeDetector init error: ' + e.message); 
+      setStatus('❌ BarcodeDetector 初始化失败: ' + e.message.substring(0,40));
+      // Try with fewer formats
+      try { nativeDetector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'code_128'] }); } catch(e2) {
+        dbg('❌ BarcodeDetector fallback also failed: ' + e2.message);
+      }
+    }
+    if (nativeDetector) {
+      setStatus('✅ BarcodeDetector 就绪, 格式: ' + use.join(','));
+    } else {
+      setStatus('❌ BarcodeDetector 完全不可用');
+    }
   })();
 } else {
   dbg('❌ BarcodeDetector NOT available in this browser');
+  setStatus('❌ BarcodeDetector 不可用，将使用 html5-qrcode 备用方案');
 }
 
 async function toggleCamera() {
@@ -552,6 +607,8 @@ async function toggleCamera() {
     });
   }
   console.log('Video ready:', video.videoWidth, 'x', video.videoHeight);
+  setStatus('✅ 相机已开启，等待扫码...');
+  showStatusBar(true);
 
   // Auto-capture every 2 seconds (non-overlapping)
   if (captureTimer) clearInterval(captureTimer);
@@ -589,6 +646,7 @@ async function captureAndScan(video) {
   const w = video.videoWidth || 1280;
   const h = video.videoHeight || 720;
   dbg('Capture: ' + w + 'x' + h + ' | attempt: ' + window._captureCount);
+  setStatus('📸 截图识别中 (' + w + 'x' + h + ')...');
 
   // === STRATEGY A: Try BarcodeDetector.detect(video) directly ===
   // iOS supports detect() on video elements better than on canvas
@@ -600,14 +658,22 @@ async function captureAndScan(video) {
         const code = b.rawValue.trim();
         if (code) {
           dbg('✅ detect(video) success: ' + code + ' (' + b.format + ')');
+          setStatus('✅ 识别到条码: ' + code);
           return { code, format: b.format };
         }
       }
+      if (barcodes.length > 0) {
+        setStatus('⚠️ detect(video) 找到条码但值为空');
+      } else {
+        setStatus('⏳ Strategy A: 未检测到条码');
+      }
     } catch(e) {
       dbg('detect(video) error: ' + e.message);
+      setStatus('❌ Strategy A 错误: ' + e.message.substring(0,40));
     }
   } else {
     dbg('detect(video) skipped - nativeDetector: ' + (!!nativeDetector) + ', readyState: ' + video.readyState);
+    setStatus('⚠️ BarcodeDetector 不可用 (native=' + (!!nativeDetector) + ', state=' + video.readyState + ')');
   }
 
   // === STRATEGY B: Canvas capture + detect ===
@@ -631,14 +697,19 @@ async function captureAndScan(video) {
         const code = b.rawValue.trim();
         if (code) {
           dbg('✅ detect(canvas) success: ' + code + ' (' + b.format + ')');
+          setStatus('✅ 识别到条码(画布): ' + code);
           return { code, format: b.format };
         }
       }
       if (barcodes.length > 0) {
         dbg('Barcodes found but empty value');
+        setStatus('⚠️ 画布找到条码但值为空');
+      } else {
+        setStatus('⏳ Strategy B: 画布未检测到条码');
       }
     } catch(e) { 
       dbg('detect(canvas) error: ' + e.message);
+      setStatus('❌ Strategy B 错误: ' + e.message.substring(0,40));
     }
   }
 
@@ -653,13 +724,16 @@ async function captureAndScan(video) {
     const code = result?.decodedText?.trim();
     if (code) {
       dbg('✅ html5-qrcode success: ' + code);
+      setStatus('✅ html5-qrcode 识别: ' + code);
       return { code, format: 'EAN_13' };
     }
   } catch(e) {
     dbg('html5-qrcode: ' + (e.message?.substring(0, 60) || 'no match'));
+    setStatus('⏳ Strategy C (html5-qrcode): ' + (e.message?.substring(0,30) || 'no match'));
   }
 
   dbg('❌ All strategies failed for this frame');
+  setStatus('❌ 本次截图未识别到条码');
   return null;
 }
 

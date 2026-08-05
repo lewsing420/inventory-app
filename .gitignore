@@ -1,0 +1,3 @@
+node_modules/
+local-cert.pem
+local-key.pem
