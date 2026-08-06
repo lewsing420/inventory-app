@@ -509,9 +509,10 @@ function createNewSheet(name) {
 let scanStream = null;
 let frameTimer = null;
 let nativeDetector = null;
-let zxingReader = null;
-let zxingHints = null;       // 普通解码 hints
-let zxingHintsHard = null;   // TRY_HARDER hints（小/模糊条码）
+let zxingReaderQR = null;    // 二维码引擎（大部分物料是 QR）
+let zxingReader1D = null;    // 一维条码引擎（EAN-13 等）
+let hintsQR = null, hints1D = null;
+let hintsQRHard = null, hints1DHard = null;
 let scanRoi = null;          // Pre-allocated ROI canvas (center zoom)
 let frameSeq = 0;            // Frame sequence, used to drop stale async results
 let lastCode = null;         // Code seen in previous frames
@@ -535,7 +536,7 @@ function dbg(msg) {
   }
 }
 
-// Init ZXing reader with a restricted format set (toys shop = EAN-13 mostly)
+// Init two ZXing readers: QR first (most materials are QR codes), then 1D barcodes
 // Restricting formats makes decoding 3-5x faster
 function initZxingReader() {
   if (typeof ZXing === 'undefined') {
@@ -544,16 +545,22 @@ function initZxingReader() {
     return;
   }
   try {
-    zxingHints = new Map();
-    zxingHints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    hintsQR = new Map();
+    hintsQR.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+    hints1D = new Map();
+    hints1D.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
       ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
       ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.CODE_128,
     ]);
-    zxingHintsHard = new Map(zxingHints);
-    zxingHintsHard.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    zxingReader = new ZXing.MultiFormatReader();
-    zxingReader.setHints(zxingHints);
-    dbg('✅ ZXing reader ready (EAN_13/EAN_8/UPC_A/CODE_128)');
+    hintsQRHard = new Map(hintsQR);
+    hintsQRHard.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    hints1DHard = new Map(hints1D);
+    hints1DHard.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    zxingReaderQR = new ZXing.MultiFormatReader();
+    zxingReaderQR.setHints(hintsQR);
+    zxingReader1D = new ZXing.MultiFormatReader();
+    zxingReader1D.setHints(hints1D);
+    dbg('✅ ZXing 引擎就绪 (QR + EAN_13/EAN_8/UPC_A/CODE_128)');
     setStatus('✅ ZXing 引擎就绪');
   } catch(e) {
     dbg('❌ ZXing init error: ' + e.message);
@@ -618,7 +625,7 @@ if ('BarcodeDetector' in window) {
     let supported = [];
     try { supported = await BarcodeDetector.getSupportedFormats(); } catch(e) { dbg('getSupportedFormats error: ' + e.message); setStatus('⚠️ getSupportedFormats: ' + e.message.substring(0,30)); }
     dbg('Supported formats: ' + (supported.join(', ') || 'none (fallback to defaults)'));
-    const want = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf'];
+    const want = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf','qr_code'];
     const use = supported.length ? want.filter(f => supported.includes(f)) : ['ean_13','ean_8','upc_a','code_128'];
     if (use.length === 0) use.push('ean_13','ean_8','upc_a');
     dbg('Using formats: ' + use.join(', '));
@@ -723,21 +730,23 @@ async function toggleCamera() {
   startFrameLoop(video);
 }
 
-// Grab one frame and decode it with 4-tier fallback:
-// 普通全帧 → 普通中心ROI → TRY_HARDER 全帧 → TRY_HARDER ROI
+// Grab one frame and decode it. 大部分物料是二维码 → QR 优先，一维条码兜底
+// 每帧最多 6 轮：QR普通 → 1D普通 → ROI(QR+1D普通) → QR强化 → 1D强化 → ROI(QR+1D强化)
 function grabAndDecode(video) {
   // iOS quirk: videoWidth/Height may be set but readyState not ready — drawing would throw
   if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
   try {
     const canvas = document.getElementById('captureCanvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    // 960 宽解码：条码纹路像素密度足够（>3px/模块），ZXing 稳定性大增
+    // 960 宽解码：二维码/条码纹路像素密度足够，ZXing 稳定性大增
     canvas.width = 960;
     canvas.height = Math.max(120, Math.round(960 * video.videoHeight / video.videoWidth));
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    let code = decodeWithZxing(canvas, false);
+    let code = decodeWithZxing(canvas, zxingReaderQR, hintsQR);
+    if (!code) code = decodeWithZxing(canvas, zxingReader1D, hints1D);
     if (!code) code = decodeRoi(canvas, false);
-    if (!code) code = decodeWithZxing(canvas, true);
+    if (!code) code = decodeWithZxing(canvas, zxingReaderQR, hintsQRHard);
+    if (!code) code = decodeWithZxing(canvas, zxingReader1D, hints1DHard);
     if (!code) code = decodeRoi(canvas, true);
     return code;
   } catch (e) {
@@ -746,10 +755,9 @@ function grabAndDecode(video) {
   }
 }
 
-// Decode a canvas with ZXing; returns trimmed code string or null
-// tryHarder=true 时用 TRY_HARDER 强化扫描（对小/模糊条码识别率大增，耗时约 3-5 倍）
-function decodeWithZxing(canvas, tryHarder) {
-  if (!zxingReader) return null;
+// Decode a canvas with a specific ZXing reader; returns trimmed code string or null
+function decodeWithZxing(canvas, reader, hints) {
+  if (!reader) return null;
   try {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -762,12 +770,8 @@ function decodeWithZxing(canvas, tryHarder) {
     }
     const lum = new ZXing.RGBLuminanceSource(packed, canvas.width, canvas.height);
     const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
-    if (tryHarder) {
-      zxingReader.setHints(zxingHintsHard);
-    } else {
-      zxingReader.setHints(zxingHints);
-    }
-    const result = zxingReader.decode(bitmap);
+    reader.setHints(hints);
+    const result = reader.decode(bitmap);
     return result ? result.getText().trim() : null;
   } catch(e) {
     return null; // NotFoundException etc. — not a real error
@@ -791,7 +795,9 @@ function decodeRoi(canvas, tryHarder) {
   scanRoi.height = Math.max(120, Math.round(960 * rh / rw));
   scanRoi.getContext('2d', { willReadFrequently: true })
     .drawImage(canvas, rx, ry, rw, rh, 0, 0, scanRoi.width, scanRoi.height);
-  return decodeWithZxing(scanRoi, tryHarder);
+  let code = decodeWithZxing(scanRoi, zxingReaderQR, tryHarder ? hintsQRHard : hintsQR);
+  if (!code) code = decodeWithZxing(scanRoi, zxingReader1D, tryHarder ? hints1DHard : hints1D);
+  return code;
 }
 
 // Continuous decode loop: try every FRAME_INTERVAL ms
@@ -1046,7 +1052,7 @@ function showManualModal() {
     <div class="modal-title">🔢 手动输入商品信息</div>
     <div class="input-group">
       <label>条码</label>
-      <input type="text" id="manualBarcode" value="${esc(barcode)}" placeholder="输入条码数字" inputmode="numeric" pattern="[0-9]*">
+      <input type="text" id="manualBarcode" value="${esc(barcode)}" placeholder="输入条码 / 二维码内容">
     </div>
     <div class="input-group">
       <label>商品名称</label>
@@ -1083,8 +1089,8 @@ function confirmManualEntry() {
     showToast('⚠️ 请输入条码');
     return;
   }
-  if (!/^\d{8,13}$/.test(barcode)) {
-    showToast('⚠️ 条码格式无效（需8-13位数字）');
+  if (barcode.length > 100) {
+    showToast('⚠️ 条码内容过长');
     return;
   }
   if (!name) {

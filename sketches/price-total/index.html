@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>设计稿：价格 + 总金额</title>
+<style>
+/* 沿用现有 App 风格，仅作预览 */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; background: #eef0f4; color: #1a1a2e; padding: 16px; }
+.preview-tip { background: #FFF7ED; border: 1px solid #FDBA74; color: #9A3412; border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; line-height: 1.6; }
+.page-title { font-size: 16px; font-weight: 700; margin: 20px 0 10px; color: #6b7280; }
+.app { max-width: 480px; margin: 0 auto; }
+
+/* ===== 扫码结果卡片 ===== */
+.card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.card-title { font-size: 14px; font-weight: 600; color: #6b7280; margin-bottom: 10px; }
+.product-info { display: flex; align-items: center; gap: 12px; }
+.product-icon { width: 40px; height: 40px; background: #eef2ff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+.product-details { flex: 1; min-width: 0; }
+.product-name { font-size: 15px; font-weight: 500; }
+.product-spec { font-size: 12px; color: #9ca3af; margin-top: 2px; }
+/* 价格显示（可点击编辑） */
+.price-line { display: flex; align-items: center; justify-content: space-between; background: #f9fafb; border: 1.5px dashed #e5e7eb; border-radius: 10px; padding: 10px 14px; margin-top: 12px; font-size: 14px; color: #6b7280; }
+.price-line .price-value { font-size: 20px; font-weight: 700; color: #DC2626; }
+.price-line .price-value .rmb { font-size: 13px; font-weight: 500; margin-right: 2px; }
+.price-line .price-hint { font-size: 11px; color: #9ca3af; }
+.product-qty { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.qty-btn { width: 32px; height: 32px; border-radius: 50%; background: #f3f4f6; border: none; font-size: 18px; font-weight: 600; color: #4F46E5; }
+.qty-value { font-size: 18px; font-weight: 700; min-width: 36px; text-align: center; }
+.btn { border: none; border-radius: 10px; padding: 10px 20px; font-size: 15px; font-weight: 500; }
+.btn-primary { background: #4F46E5; color: #fff; width: 100%; margin-top: 12px; }
+
+/* ===== 手动输入弹窗 ===== */
+.modal { background: #fff; border-radius: 20px 20px 0 0; padding: 20px; margin-top: 12px; }
+.modal-handle { width: 36px; height: 4px; background: #d1d5db; border-radius: 2px; margin: 0 auto 16px; }
+.modal-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+.input-group { margin-bottom: 12px; }
+.input-group label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 4px; font-weight: 500; }
+.input-group input { width: 100%; padding: 10px 14px; border: 1.5px solid #e5e7eb; border-radius: 10px; font-size: 15px; }
+.input-group input:focus { border-color: #4F46E5; outline: none; }
+.input-row { display: flex; gap: 12px; }
+.input-row .input-group { flex: 1; }
+
+/* ===== 当前盘点单（带金额） ===== */
+.item-list .item { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid #f3f4f6; gap: 10px; font-size: 14px; }
+.item .item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .item-amount { font-size: 13px; color: #DC2626; font-weight: 600; flex-shrink: 0; }
+.item .item-del { color: #ef4444; font-size: 18px; }
+.sheet-total { display: flex; justify-content: space-between; align-items: center; background: #eef2ff; border-radius: 10px; padding: 12px 14px; margin-top: 10px; font-size: 14px; color: #4F46E5; font-weight: 600; }
+.sheet-total .total-value { font-size: 20px; font-weight: 700; color: #DC2626; }
+.empty-state { text-align: center; padding: 24px; color: #9ca3af; font-size: 14px; }
+
+/* ===== 记录页（盘点单列表带金额） ===== */
+.sheet-item { padding: 14px 16px; background: #fff; border-radius: 12px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.sheet-item .row1 { display: flex; justify-content: space-between; align-items: center; }
+.sheet-item .name { font-size: 15px; font-weight: 500; }
+.sheet-item .amount { font-size: 15px; font-weight: 700; color: #DC2626; }
+.sheet-item .meta { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+
+/* ===== 报表页 ===== */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 8px 6px; border-bottom: 1px solid #f3f4f6; text-align: left; }
+th { background: #f9fafb; font-weight: 600; font-size: 12px; color: #6b7280; }
+td.num, th.num { text-align: right; }
+tr.total-row td { border-top: 2px solid #e5e7eb; font-weight: 700; background: #fef9c3; }
+.amount-red { color: #DC2626; }
+</style>
+</head>
+<body>
+<div class="app">
+
+<div class="preview-tip">📌 <b>设计稿预览（静态示意，非真实数据）</b><br>改动点：① 扫码结果/手动输入增加<b>价格</b> ② 盘点单卡片、列表、报表增加<b>金额合计</b></div>
+
+<!-- ========== 1. 扫码结果卡片（识别后） ========== -->
+<div class="page-title">① 扫码结果（识别后）— 新增价格行</div>
+<div class="card">
+  <div class="card-title">📦 扫描结果</div>
+  <div class="product-info">
+    <div class="product-icon">🧸</div>
+    <div class="product-details">
+      <div class="product-name">乐高城市警察局套装</div>
+      <div class="product-spec">乐高 · 636PCS</div>
+    </div>
+    <div class="product-qty">
+      <button class="qty-btn">−</button>
+      <span class="qty-value">1</span>
+      <button class="qty-btn">+</button>
+    </div>
+  </div>
+  <!-- 新增：价格行（点击可改） -->
+  <div class="price-line">
+    <span>💰 单价 <span class="price-hint">（点击修改）</span></span>
+    <span class="price-value"><span class="rmb">¥</span>129.00</span>
+  </div>
+  <button class="btn btn-primary">✓ 添加到盘点单</button>
+</div>
+
+<!-- ========== 2. 手动输入弹窗 ========== -->
+<div class="page-title">② 手动输入弹窗 — 新增价格输入</div>
+<div class="modal" style="border-radius:12px;">
+  <div class="modal-handle"></div>
+  <div class="modal-title">🔢 手动输入商品信息</div>
+  <div class="input-group">
+    <label>条码</label>
+    <input type="text" value="6901236345672">
+  </div>
+  <div class="input-group">
+    <label>商品名称</label>
+    <input type="text" value="乐高城市警察局套装">
+  </div>
+  <div class="input-row">
+    <div class="input-group">
+      <label>品牌</label>
+      <input type="text" value="乐高">
+    </div>
+    <div class="input-group">
+      <label>规格</label>
+      <input type="text" value="636PCS">
+    </div>
+  </div>
+  <!-- 新增：价格 + 数量 同行 -->
+  <div class="input-row">
+    <div class="input-group">
+      <label>💰 价格（元）</label>
+      <input type="number" value="129.00" placeholder="0.00" inputmode="decimal">
+    </div>
+    <div class="input-group">
+      <label>数量</label>
+      <input type="number" value="1" min="1" style="width:80px;">
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;">
+    <button class="btn btn-primary" style="flex:1;">✓ 确认</button>
+    <button class="btn" style="flex:1;background:#f3f4f6;color:#374151;">取消</button>
+  </div>
+</div>
+
+<!-- ========== 3. 当前盘点单（扫码页底部） ========== -->
+<div class="page-title">③ 当前盘点单 — 每项显示金额 + 底部合计</div>
+<div class="card">
+  <div class="card-title" style="display:flex;justify-content:space-between;">
+    <span>📋 当前盘点单</span>
+    <span style="font-weight:400;color:#9ca3af;">3 项</span>
+  </div>
+  <div class="item-list">
+    <div class="item">
+      <div class="item-name">乐高城市警察局套装</div>
+      <div class="item-amount">¥129.00 × 2</div>
+      <span class="item-del">✕</span>
+    </div>
+    <div class="item">
+      <div class="item-name">万代高达RX-78</div>
+      <div class="item-amount">¥65.50 × 1</div>
+      <span class="item-del">✕</span>
+    </div>
+    <div class="item">
+      <div class="item-name">未知商品 4902370551587</div>
+      <div class="item-amount" style="color:#9ca3af;">— 未定价</div>
+      <span class="item-del">✕</span>
+    </div>
+  </div>
+  <!-- 新增：合计 -->
+  <div class="sheet-total">
+    <span>💰 合计金额</span>
+    <span class="total-value">¥323.50</span>
+  </div>
+</div>
+
+<!-- ========== 4. 记录页（盘点单列表） ========== -->
+<div class="page-title">④ 记录页 — 每个盘点单显示总金额</div>
+<div class="sheet-item">
+  <div class="row1">
+    <span class="name">盘点单 #1</span>
+    <span class="amount">¥1,286.00</span>
+  </div>
+  <div class="meta">8/6 · 12 种商品 · 共 46 件</div>
+</div>
+<div class="sheet-item">
+  <div class="row1">
+    <span class="name">盘点单 #2</span>
+    <span class="amount" style="color:#9ca3af;">¥0.00</span>
+  </div>
+  <div class="meta">8/6 · 0 种商品 · 共 0 件</div>
+</div>
+
+<!-- ========== 5. 报表页 ========== -->
+<div class="page-title">⑤ 报表页 — 新增单价/金额列 + 总计行</div>
+<div class="card">
+  <div class="card-title">📊 预览（盘点单 #1）</div>
+  <table>
+    <tr>
+      <th>#</th><th>商品名称</th><th>数量</th><th class="num">单价</th><th class="num">金额</th>
+    </tr>
+    <tr>
+      <td>1</td><td>乐高城市警察局套装</td><td>2</td><td class="num">¥129.00</td><td class="num amount-red">¥258.00</td>
+    </tr>
+    <tr>
+      <td>2</td><td>万代高达RX-78</td><td>1</td><td class="num">¥65.50</td><td class="num amount-red">¥65.50</td>
+    </tr>
+    <tr>
+      <td>3</td><td>未知商品 4902370551587</td><td>3</td><td class="num" style="color:#9ca3af;">—</td><td class="num" style="color:#9ca3af;">—</td>
+    </tr>
+    <tr class="total-row">
+      <td colspan="3">合计</td>
+      <td class="num"></td>
+      <td class="num amount-red">¥323.50</td>
+    </tr>
+  </table>
+</div>
+<div class="preview-tip" style="margin-top:14px;">导出 CSV/JSON 时同步包含：单价、金额、合计（未定价商品按 0 计，标注为空）</div>
+
+</div>
+</body>
+</html>
