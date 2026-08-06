@@ -58,6 +58,17 @@ button { cursor: pointer; border: none; outline: none; }
 .scan-result { display: none; }
 .scan-result.show { display: block; }
 
+/* 价格行（扫码结果内） */
+.price-line { display: flex; align-items: center; justify-content: space-between; background: #f9fafb; border: 1.5px dashed #e5e7eb; border-radius: 10px; padding: 10px 14px; margin-top: 12px; font-size: 14px; color: #6b7280; }
+.price-line .price-value { font-size: 20px; font-weight: 700; color: #DC2626; }
+.price-line .price-value .rmb { font-size: 13px; font-weight: 500; margin-right: 2px; }
+.price-line .price-hint { font-size: 11px; color: #9ca3af; }
+.price-line input { width: 110px; font-size: 20px; font-weight: 700; color: #DC2626; border: none; background: transparent; outline: none; text-align: right; }
+
+/* 盘点单合计 */
+.sheet-total { display: flex; justify-content: space-between; align-items: center; background: #eef2ff; border-radius: 10px; padding: 12px 14px; margin-top: 10px; font-size: 14px; color: #4F46E5; font-weight: 600; }
+.sheet-total .total-value { font-size: 20px; font-weight: 700; color: #DC2626; }
+
 /* ===== Cards ===== */
 .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 .card-title { font-size: 14px; font-weight: 600; color: #6b7280; margin-bottom: 8px; }
@@ -124,6 +135,7 @@ button { cursor: pointer; border: none; outline: none; }
 .item .qty-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .item .qty-input { width: 44px; text-align: center; font-size: 16px; font-weight: 600; border: 1px solid #e5e7eb; border-radius: 8px; padding: 4px; }
 .item .item-name { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .item-amount { font-size: 12px; color: #DC2626; font-weight: 600; flex-shrink: 0; }
 .item .item-del { color: #ef4444; font-size: 18px; padding: 4px; flex-shrink: 0; }
 
 /* ===== Manual Entry ===== */
@@ -192,6 +204,11 @@ button { cursor: pointer; border: none; outline: none; }
                 <span class="qty-value" id="resultQty" contenteditable="false" onclick="editQty(this)">1</span>
                 <button class="qty-btn" onclick="adjustQty(1)">+</button>
               </div>
+            </div>
+            <!-- 价格行：点击金额可修改 -->
+            <div class="price-line" id="resultPriceLine" onclick="editResultPrice()">
+              <span>💰 单价 <span class="price-hint" id="resultPriceHint">（点击修改）</span></span>
+              <span class="price-value"><span class="rmb">¥</span><span id="resultPriceValue">0.00</span></span>
             </div>
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;">
@@ -341,6 +358,8 @@ button { cursor: pointer; border: none; outline: none; }
 
 <!-- ZXing barcode engine (local file, no CDN) -->
 <script src="lib/zxing.min.js"></script>
+<!-- 内置商品库（扫码秒查，无需 API） -->
+<script src="products.js"></script>
 <script>
 // ===== Debug Status Bar (visible on screen) =====
 function showStatusBar(show) {
@@ -363,6 +382,7 @@ let appState = {
   currentBarcode: null, // Currently scanned barcode
   currentProduct: null, // Currently scanned product info
   currentQty: 1,        // Current quantity for scanned product
+  currentPrice: null,   // Current unit price (yuan) for scanned product
   isScanning: false,    // Whether camera is active
   isProcessing: false,  // Lock flag to prevent race on scan callback
 };
@@ -918,7 +938,25 @@ async function processBarcode(barcode) {
   appState.isProcessing = true;
   appState.currentBarcode = barcode;
 
-  // Check local cache first
+  // 内置商品库优先（物料编码/条码精确匹配）
+  if (typeof PRODUCT_DB !== 'undefined') {
+    const hit = PRODUCT_DB.find(p => p.b === barcode);
+    if (hit) {
+      const product = {
+        barcode: barcode,
+        name: hit.n,
+        spec: hit.u || '',
+        brand: '',
+        price: hit.p,
+      };
+      try { localStorage.setItem(CACHE_PREFIX + 'barcode_' + barcode, JSON.stringify(product)); } catch(e) { /* ignore */ }
+      showProductResult(product);
+      appState.isProcessing = false;
+      return;
+    }
+  }
+
+  // Check local cache next
   const cached = localStorage.getItem(CACHE_PREFIX + 'barcode_' + barcode);
   if (cached) {
     try {
@@ -1016,9 +1054,49 @@ function showProductResult(product) {
   ].filter(Boolean).join(' · ') || '暂无规格信息';
   document.getElementById('resultQty').textContent = '1';
   appState.currentQty = 1;
+  appState.currentPrice = (typeof product.price === 'number' && product.price > 0) ? product.price : null;
   appState.currentProduct = product;
+  // 价格行：有价显示金额，未定价提示可点设置
+  const priceVal = document.getElementById('resultPriceValue');
+  const priceHint = document.getElementById('resultPriceHint');
+  if (appState.currentPrice) {
+    priceVal.textContent = appState.currentPrice.toFixed(2);
+    priceHint.textContent = '（点击修改）';
+  } else {
+    priceVal.textContent = '—';
+    priceHint.textContent = '（未定价，点此设置）';
+  }
   document.getElementById('scanResult').classList.add('show');
   document.getElementById('manualEntry').classList.remove('show');
+}
+
+// 点击价格行 → 编辑价格
+function editResultPrice() {
+  const line = document.getElementById('resultPriceLine');
+  const valEl = document.getElementById('resultPriceValue');
+  if (line.querySelector('input')) return; // 已在编辑
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.inputMode = 'decimal';
+  input.step = '0.01';
+  input.min = '0';
+  input.value = appState.currentPrice ? String(appState.currentPrice) : '';
+  valEl.replaceWith(input);
+  input.focus();
+  input.select();
+  const finish = () => {
+    const price = parseFloat(input.value);
+    appState.currentPrice = (price > 0) ? price : null;
+    if (appState.currentProduct) appState.currentProduct.price = appState.currentPrice;
+    const span = document.createElement('span');
+    span.id = 'resultPriceValue';
+    span.textContent = appState.currentPrice ? appState.currentPrice.toFixed(2) : '—';
+    input.replaceWith(span);
+    const hint = document.getElementById('resultPriceHint');
+    if (hint) hint.textContent = appState.currentPrice ? '（点击修改）' : '（未定价，点此设置）';
+  };
+  input.addEventListener('blur', finish);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
 }
 
 function showManualEntry(barcode) {
@@ -1067,6 +1145,10 @@ function showManualModal() {
       <input type="text" id="manualSpec" value="${esc(product.spec || '')}" placeholder="例如：550ml">
     </div>
     <div class="input-group">
+      <label>💰 价格（元）</label>
+      <input type="number" id="manualPrice" value="${product.price > 0 ? product.price : ''}" placeholder="0.00" inputmode="decimal" step="0.01" style="width:140px;">
+    </div>
+    <div class="input-group">
       <label>数量</label>
       <input type="number" id="manualQty" value="${appState.currentQty}" min="1" style="width:80px;">
     </div>
@@ -1084,6 +1166,8 @@ function confirmManualEntry() {
   const brand = document.getElementById('manualBrand').value.trim();
   const spec = document.getElementById('manualSpec').value.trim();
   const qty = parseInt(document.getElementById('manualQty').value) || 1;
+  const priceInput = document.getElementById('manualPrice');
+  const price = priceInput ? parseFloat(priceInput.value) : NaN;
 
   if (!barcode) {
     showToast('⚠️ 请输入条码');
@@ -1103,6 +1187,7 @@ function confirmManualEntry() {
     name: name,
     spec: spec,
     brand: brand,
+    price: (price > 0) ? price : null,
   };
   
   appState.currentBarcode = barcode;
@@ -1173,11 +1258,13 @@ function addToSheet() {
   }
   
   const qty = appState.currentQty || 1;
+  const price = appState.currentPrice; // 单价（可能为 null = 未定价）
   
   // Check if barcode already exists in sheet
   const existing = sheet.items.find(i => i.barcode === product.barcode);
   if (existing) {
     existing.quantity += qty;
+    if (price > 0) existing.price = price; // 新扫到的价格覆盖
     showToast(`✅ ${product.name} 数量已增加 ${qty}`);
   } else {
     const item = {
@@ -1186,6 +1273,7 @@ function addToSheet() {
       name: product.name || '未知商品',
       spec: product.spec || '',
       brand: product.brand || '',
+      price: price > 0 ? price : null,
       quantity: qty,
       location: getDefaultLocation(),
       scannedAt: new Date().toISOString(),
@@ -1209,6 +1297,14 @@ function addToSheet() {
 }
 
 // ===== Sheet Management =====
+function sheetTotal(sheet) {
+  // 只计已定价商品（未定价不计入，避免误导）
+  return sheet.items.reduce((sum, i) => sum + ((i.price > 0) ? i.price * i.quantity : 0), 0);
+}
+function fmtMoney(v) {
+  return '¥' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
 function renderSheetList() {
   const el = document.getElementById('sheetList');
   if (appState.sheets.length === 0) {
@@ -1218,15 +1314,18 @@ function renderSheetList() {
   
   el.innerHTML = appState.sheets.map(sheet => {
     const itemCount = sheet.items.reduce((sum, i) => sum + i.quantity, 0);
+    const total = sheetTotal(sheet);
+    const unpriced = sheet.items.filter(i => !(i.price > 0)).length;
     const date = new Date(sheet.createdAt).toLocaleDateString('zh-CN');
     const active = sheet.id === appState.currentSheetId ? 'style="border-left:3px solid #4F46E5;"' : '';
     return `
       <div class="sheet-item" ${active} onclick="selectSheet('${sheet.id}')">
         <div>
           <div class="name">${sheet.name}</div>
-          <div class="meta">${date} · ${sheet.items.length} 种商品 · 共 ${itemCount} 件</div>
+          <div class="meta">${date} · ${sheet.items.length} 种商品 · 共 ${itemCount} 件${unpriced ? ' · ' + unpriced + ' 项未定价' : ''}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:15px;font-weight:700;color:#DC2626;">${fmtMoney(total)}</span>
           <span class="badge">${sheet.items.length}</span>
           <span onclick="event.stopPropagation();deleteSheet('${sheet.id}')" style="color:#ef4444;font-size:16px;padding:4px;">✕</span>
         </div>
@@ -1247,6 +1346,8 @@ function renderCurrentItems() {
   }
   
   countEl.textContent = `${sheet.items.length} 项`;
+  const total = sheetTotal(sheet);
+  const unpricedCount = sheet.items.filter(i => !(i.price > 0)).length;
   
   el.innerHTML = `
     <div class="item-list">
@@ -1258,9 +1359,16 @@ function renderCurrentItems() {
             <button class="qty-btn" onclick="editSheetItemQty('${item.id}', 1)" style="width:26px;height:26px;font-size:14px;">+</button>
           </div>
           <div class="item-name">${item.name || item.barcode}</div>
+          ${item.price > 0
+            ? `<div class="item-amount">${fmtMoney(item.price)} × ${item.quantity} = ${fmtMoney(item.price * item.quantity)}</div>`
+            : `<div class="item-amount" style="color:#9ca3af;">— 未定价</div>`}
           <span class="item-del" onclick="removeSheetItem('${item.id}')">✕</span>
         </div>
       `).join('')}
+    </div>
+    <div class="sheet-total">
+      <span>💰 合计金额${unpricedCount ? ' <span style="font-size:12px;font-weight:400;">(' + unpricedCount + ' 项未定价)</span>' : ''}</span>
+      <span class="total-value">${fmtMoney(total)}</span>
     </div>
   `;
 }
@@ -1433,23 +1541,32 @@ function updateReportPreview() {
     '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">#</td>' +
     '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">条码</td>' +
     '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">商品名称</td>' +
-    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">品牌</td>' +
     '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">规格</td>' +
     '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;text-align:right;">数量</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;text-align:right;">单价</td>' +
+    '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;text-align:right;">金额</td>' +
     '<td style="padding:6px 8px;border-bottom:2px solid #e5e7eb;">库位</td>' +
     '</tr>';
   
   sheet.items.forEach((item, i) => {
+    const priceText = item.price > 0 ? fmtMoney(item.price) : '<span style="color:#9ca3af;">—</span>';
+    const amountText = item.price > 0 ? fmtMoney(item.price * item.quantity) : '<span style="color:#9ca3af;">—</span>';
     html += '<tr>' +
       `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${i+1}</td>` +
       `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.barcode}</td>` +
       `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.name}</td>` +
-      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.brand || '-'}</td>` +
       `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.spec || '-'}</td>` +
       `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;text-align:right;">${item.quantity}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;text-align:right;">${priceText}</td>` +
+      `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;text-align:right;font-weight:600;color:#DC2626;">${amountText}</td>` +
       `<td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${item.location || '-'}</td>` +
       '</tr>';
   });
+  html += '<tr style="font-weight:700;background:#fef9c3;">' +
+    `<td colspan="5" style="padding:8px;border-top:2px solid #e5e7eb;">合计</td>` +
+    `<td colspan="2" style="padding:8px;border-top:2px solid #e5e7eb;text-align:right;color:#DC2626;">${fmtMoney(sheetTotal(sheet))}</td>` +
+    `<td style="padding:8px;border-top:2px solid #e5e7eb;"></td>` +
+    '</tr>';
   html += '</table>';
   
   document.getElementById('reportTable').innerHTML = html;
@@ -1476,16 +1593,19 @@ function exportCSV() {
 
   // BOM for Excel Chinese support
   const BOM = '\uFEFF';
-  const headers = ['条码', '商品名称', '品牌', '规格', '数量', '库位', '扫码时间'];
+  const headers = ['条码', '商品名称', '规格', '数量', '单价', '金额', '库位', '扫码时间'];
   const rows = sheet.items.map(item => [
     csvEscape(item.barcode),
     csvEscape(item.name),
-    csvEscape(item.brand || ''),
     csvEscape(item.spec || ''),
     item.quantity,
+    item.price > 0 ? item.price.toFixed(2) : '',
+    item.price > 0 ? (item.price * item.quantity).toFixed(2) : '',
     csvEscape(item.location || ''),
     new Date(item.scannedAt).toLocaleString('zh-CN'),
   ]);
+  // 合计行
+  rows.push(['', '', '', '', '合计', sheetTotal(sheet).toFixed(2), '', '']);
   
   const csv = BOM + headers.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
   
