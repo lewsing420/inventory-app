@@ -1180,7 +1180,7 @@ function showManualModal() {
     </div>
     <div class="input-group">
       <label>数量</label>
-      <input type="number" id="manualQty" value="${appState.currentQty}" min="1" style="width:80px;">
+      <input type="text" id="manualQty" value="${appState.currentQty}" inputmode="numeric" pattern="[0-9]*" style="width:80px;">
     </div>
     <div class="btn-group">
       <button class="btn btn-primary btn-block" onclick="confirmManualEntry()">✓ 确认</button>
@@ -1242,35 +1242,31 @@ function adjustQty(delta) {
   appState.currentQty = qty;
 }
 
+// 数量编辑：替换为数字输入框（iOS 弹数字键盘）
 function editQty(el) {
-  const current = el.textContent;
-  el.contentEditable = 'true';
-  el.focus();
-  
-  // Select all text
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
-  
-  const onBlur = () => {
-    el.contentEditable = 'false';
-    let val = parseInt(el.textContent) || 1;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.pattern = '[0-9]*';
+  input.value = el.textContent;
+  input.style.cssText = 'width:56px;text-align:center;font-size:18px;font-weight:700;color:#1a1a2e;border:1.5px solid #4F46E5;border-radius:8px;padding:2px 4px;outline:none;background:#fff;';
+  el.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finish = () => {
+    let val = parseInt(input.value) || 1;
     val = Math.max(1, val);
-    el.textContent = val;
+    const span = document.createElement('span');
+    span.className = 'qty-value';
+    span.id = 'resultQty';
+    span.textContent = val;
+    span.onclick = function() { editQty(this); };
+    input.replaceWith(span);
     appState.currentQty = val;
-    el.removeEventListener('blur', onBlur);
-    el.removeEventListener('keydown', onKeydown);
   };
-  const onKeydown = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      el.blur();
-    }
-  };
-  el.addEventListener('blur', onBlur);
-  el.addEventListener('keydown', onKeydown);
+  input.addEventListener('blur', finish);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
 }
 
 // ===== Add to Sheet =====
@@ -1423,31 +1419,26 @@ function editSheetItemDirect(itemId, el) {
   const item = sheet.items.find(i => i.id === itemId);
   if (!item) return;
   
-  const current = el.textContent;
-  el.contentEditable = 'true';
-  el.focus();
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
-  
-  const onBlur = () => {
-    el.contentEditable = 'false';
-    let val = parseInt(el.textContent) || 1;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.pattern = '[0-9]*';
+  input.value = el.textContent;
+  input.style.cssText = 'width:48px;text-align:center;font-size:15px;font-weight:600;color:#1a1a2e;border:1.5px solid #4F46E5;border-radius:6px;padding:2px;outline:none;background:#fff;';
+  el.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finish = () => {
+    let val = parseInt(input.value) || 1;
     val = Math.max(1, val);
-    el.textContent = val;
     item.quantity = val;
     saveData();
     renderSheetList();
-    el.removeEventListener('blur', onBlur);
-    el.removeEventListener('keydown', onKeydown);
+    renderCurrentItems(); // 重建列表（同步金额显示）
   };
-  const onKeydown = (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
-  };
-  el.addEventListener('blur', onBlur);
-  el.addEventListener('keydown', onKeydown);
+  input.addEventListener('blur', finish);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
 }
 
 function removeSheetItem(itemId) {
