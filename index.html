@@ -927,36 +927,66 @@ function onBarcodeDetected(decodedText, decodedResult) {
 }
 
 // ===== Barcode Processing =====
-async function processBarcode(barcode) {
+
+// 解析二维码内容。物料二维码常见格式: 编码^名称^规格^字段^字段
+// 例: 20103486^可降解粗吸管 JL V^100支/包X20包/箱^0^0
+function parseQrContent(raw) {
+  const s = String(raw || '').trim();
+  if (!s.includes('^')) {
+    return { barcode: s }; // 纯编码/纯条码
+  }
+  const parts = s.split('^').map(x => x.trim());
+  return {
+    barcode: parts[0] || s,          // 第一个字段 = 物料编码
+    name: parts[1] || '',            // 第二个字段 = 名称
+    spec: parts[2] || '',            // 第三个字段 = 规格
+  };
+}
+
+async function processBarcode(rawBarcode) {
   if (appState.isProcessing) return; // Race guard
-  // Relaxed validation: accept any non-empty value
-  if (!barcode || !barcode.trim()) {
+  if (!rawBarcode || !rawBarcode.trim()) {
     showToast('⚠️ 未读取到条码');
     return;
   }
 
   appState.isProcessing = true;
+  // 解析二维码复合内容，取物料编码
+  const parsed = parseQrContent(rawBarcode);
+  const barcode = parsed.barcode;
   appState.currentBarcode = barcode;
 
-  // 内置商品库优先（物料编码/条码精确匹配）
+  // 1) 内置商品库（按解析出的物料编码匹配）+ 二维码自带信息
+  let product = null;
   if (typeof PRODUCT_DB !== 'undefined') {
     const hit = PRODUCT_DB.find(p => p.b === barcode);
     if (hit) {
-      const product = {
+      product = {
         barcode: barcode,
-        name: hit.n,
-        spec: hit.u || '',
+        name: parsed.name || hit.n,      // 二维码自带名称优先（实时准确）
+        spec: parsed.spec || hit.u || '', // 二维码规格优先，库单位兜底
         brand: '',
-        price: hit.p,
+        price: hit.p,                     // 价格必须来自商品库（二维码里为 0）
       };
-      try { localStorage.setItem(CACHE_PREFIX + 'barcode_' + barcode, JSON.stringify(product)); } catch(e) { /* ignore */ }
-      showProductResult(product);
-      appState.isProcessing = false;
-      return;
+    } else if (parsed.name) {
+      // 库未命中但二维码自带名称 → 直接使用，不用手动输入
+      product = {
+        barcode: barcode,
+        name: parsed.name,
+        spec: parsed.spec || '',
+        brand: '',
+        price: null,
+      };
     }
   }
+  if (product) {
+    try { localStorage.setItem(CACHE_PREFIX + 'barcode_' + barcode, JSON.stringify(product)); } catch(e) { /* ignore */ }
+    showProductResult(product);
+    appState.isProcessing = false;
+    return;
+  }
 
-  // Check local cache next
+  // 2) Check local cache next
   const cached = localStorage.getItem(CACHE_PREFIX + 'barcode_' + barcode);
   if (cached) {
     try {
@@ -971,7 +1001,7 @@ async function processBarcode(barcode) {
   const apiUrl = document.getElementById('settingApiUrl').value.trim();
   const apiKey = document.getElementById('settingApiKey').value.trim();
 
-  let product = null;
+  // (product 已在上面声明，此处直接复用)
 
   // Strategy 1: Try direct API URL (Worker proxy or tianapi)
   if (apiUrl) {
